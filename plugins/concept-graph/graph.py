@@ -15,33 +15,29 @@ either the (mutated) graph dict or a query result.  No wrapper classes.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
-from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 try:
     from .schema import (
         Relationship,
+        _NODE_CLASS,
         make_node,
         make_edge,
         make_cluster,
+        now_iso as _now_iso,
     )
 except ImportError:
     from schema import (  # type: ignore[no-redef]
         Relationship,
+        _NODE_CLASS,
         make_node,
         make_edge,
         make_cluster,
+        now_iso as _now_iso,
     )
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _refresh_metadata(graph: dict) -> dict:
@@ -101,10 +97,31 @@ def add_node(graph: dict, node: dict) -> dict:
 
 
 def update_node(graph: dict, id: str, fields: dict) -> dict:
-    """Partial update of an existing node. Bumps ``updated``."""
+    """Partial update of an existing node. Bumps ``updated``.
+
+    Raises ValueError if *fields* contains unknown field names for the node's
+    type, or if *fields* attempts to change the node's ``type``.
+    """
     if id not in graph["nodes"]:
         raise KeyError(f"Node not found: {id}")
     existing = graph["nodes"][id]
+
+    # Reject type changes.
+    if "type" in fields and fields["type"] != existing["type"]:
+        raise ValueError(
+            f"Cannot change node type from '{existing['type']}' to '{fields['type']}'"
+        )
+
+    # Reject unknown fields.
+    node_type = existing["type"]
+    cls = _NODE_CLASS[node_type]
+    valid_fields = {f.name for f in dataclasses.fields(cls)}
+    unknown = set(fields) - valid_fields
+    if unknown:
+        raise ValueError(
+            f"Invalid field(s) for node type '{node_type}': {sorted(unknown)}"
+        )
+
     existing.update(fields)
     existing["updated"] = _now_iso()
     # Re-validate the merged node
@@ -140,11 +157,20 @@ def add_edge(
     context: Optional[str] = None,
     weight: float = 0.5,
 ) -> dict:
-    """Create an edge between two existing nodes."""
+    """Create an edge between two existing nodes.
+
+    Raises ValueError if an edge with the same source, target, and relationship
+    already exists.
+    """
     if source not in graph["nodes"]:
         raise KeyError(f"Source node not found: {source}")
     if target not in graph["nodes"]:
         raise KeyError(f"Target node not found: {target}")
+    for e in graph["edges"]:
+        if e["source"] == source and e["target"] == target and e["relationship"] == relationship:
+            raise ValueError(
+                f"Duplicate edge: {source} --[{relationship}]--> {target} already exists"
+            )
     edge_data = {
         "source": source,
         "target": target,

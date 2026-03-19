@@ -94,9 +94,13 @@ class Relationship(str, Enum):
 # Helper
 # ---------------------------------------------------------------------------
 
-def _now_iso() -> str:
+def now_iso() -> str:
     """Return the current UTC time as an ISO-8601 string."""
     return datetime.now(timezone.utc).isoformat()
+
+
+# Keep the private alias for backwards compatibility within this module.
+_now_iso = now_iso
 
 
 # ---------------------------------------------------------------------------

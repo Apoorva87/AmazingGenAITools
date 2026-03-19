@@ -20,6 +20,7 @@ from schema import (
     make_node,
     make_edge,
     make_cluster,
+    now_iso,
     NodeType,
     Relationship,
 )
@@ -448,3 +449,83 @@ class TestStats:
         assert s["nodes_by_type"]["note"] == 1
         assert s["edges_by_relationship"]["depends_on"] == 1
         assert s["cluster_sizes"]["dl"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Tests for bug-fix issues 1-4
+# ---------------------------------------------------------------------------
+
+class TestNowIsoExported:
+    """Issue 1: now_iso() should be importable from schema."""
+
+    def test_now_iso_returns_string(self):
+        ts = now_iso()
+        assert isinstance(ts, str)
+
+    def test_now_iso_is_utc_iso8601(self):
+        ts = now_iso()
+        # Must contain timezone offset or 'Z'; basic structural check.
+        assert "+" in ts or ts.endswith("+00:00") or "+00:00" in ts
+
+    def test_graph_does_not_define_own_now_iso(self):
+        """graph module should not have its own _now_iso definition."""
+        import inspect
+        import graph as g_mod
+        src = inspect.getsource(g_mod)
+        # After the fix, graph.py must not contain a standalone def _now_iso
+        assert "def _now_iso" not in src
+
+
+class TestUpdateNodeInvalidFields:
+    """Issue 2: update_node should reject unknown field names."""
+
+    def test_rejects_unknown_field(self, sample_graph):
+        with pytest.raises(ValueError, match="Invalid field"):
+            graph.update_node(sample_graph, "attention", {"nonexistent_field": "val"})
+
+    def test_rejects_multiple_unknown_fields(self, sample_graph):
+        with pytest.raises(ValueError, match="Invalid field"):
+            graph.update_node(sample_graph, "attention", {"foo": 1, "bar": 2})
+
+    def test_rejects_field_wrong_for_type(self, sample_graph):
+        # 'quality' is a ResourceNode field, not valid on a concept node
+        with pytest.raises(ValueError, match="Invalid field"):
+            graph.update_node(sample_graph, "attention", {"quality": 4})
+
+    def test_accepts_valid_field(self, sample_graph):
+        g = graph.update_node(sample_graph, "attention", {"confidence": 4})
+        assert g["nodes"]["attention"]["confidence"] == 4
+
+
+class TestUpdateNodeTypeChange:
+    """Issue 3: update_node should prevent changing the node type."""
+
+    def test_rejects_type_change(self, sample_graph):
+        with pytest.raises(ValueError, match="Cannot change node type"):
+            graph.update_node(sample_graph, "attention", {"type": "resource"})
+
+    def test_allows_same_type(self, sample_graph):
+        # Setting type to the same value should be fine (no-op on type)
+        g = graph.update_node(sample_graph, "attention", {"type": "concept", "confidence": 2})
+        assert g["nodes"]["attention"]["type"] == "concept"
+
+
+class TestDuplicateEdgePrevention:
+    """Issue 4: add_edge should raise ValueError on duplicate edges."""
+
+    def test_duplicate_edge_raises(self, sample_graph):
+        # flash_attention --[depends_on]--> attention already exists in sample_graph
+        with pytest.raises(ValueError, match="Duplicate edge"):
+            graph.add_edge(sample_graph, "flash_attention", "attention", "depends_on")
+
+    def test_same_pair_different_relationship_allowed(self, sample_graph):
+        # Same source/target but different relationship should succeed
+        initial_count = len(sample_graph["edges"])
+        g = graph.add_edge(sample_graph, "flash_attention", "attention", "related_to")
+        assert len(g["edges"]) == initial_count + 1
+
+    def test_reversed_direction_allowed(self, sample_graph):
+        # Reversing source/target is a different edge
+        initial_count = len(sample_graph["edges"])
+        g = graph.add_edge(sample_graph, "attention", "flash_attention", "depends_on")
+        assert len(g["edges"]) == initial_count + 1
