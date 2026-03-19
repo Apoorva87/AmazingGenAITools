@@ -1,0 +1,2 @@
+# concept-graph plugin
+# Uses only the Python standard library — no external dependencies.
