@@ -17,9 +17,8 @@ from __future__ import annotations
 
 import json
 import os
-from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 try:
     from .schema import (
