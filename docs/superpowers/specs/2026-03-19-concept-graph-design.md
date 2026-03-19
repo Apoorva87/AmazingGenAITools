@@ -103,6 +103,8 @@ Directed connections between any two nodes.
 | Provenance | `derived_from`, `learned_from`, `supports` |
 | Action | `action_for`, `produces`, `blocked_by` |
 
+**Convention:** Edges are stored in one direction only. Use `part_of` (child → parent), not `contains`. Use `depends_on` (dependent → dependency), not `enables` from the other side. When both directions are meaningful and distinct, both edges may exist. The `contains` and `enables` types exist for cases where the semantics are genuinely different from the inverse.
+
 ## Clusters
 
 Organizational containers stored separately from nodes.
@@ -159,10 +161,11 @@ All functions take and return plain dicts. No wrapper classes.
 | `add_edge` | `(graph: dict, source: str, target: str, relationship: str, context: str = None, weight: float = 0.5) -> dict` | Create an edge between two nodes |
 | `remove_edge` | `(graph: dict, source: str, target: str, relationship: str = None) -> dict` | Remove edge(s), optionally filtered by relationship |
 | `get_node` | `(graph: dict, id: str) -> dict or None` | Lookup by ID |
-| `find_nodes` | `(graph: dict, type: str = None, tags: list = None, cluster: str = None, text: str = None) -> list` | Filter/search nodes |
+| `find_nodes` | `(graph: dict, type: str = None, tags: list = None, cluster: str = None, text: str = None) -> list` | Filter/search nodes. `text` does substring match on `name`, `body`, and `tags`. |
 | `get_neighbors` | `(graph: dict, id: str, relationship: str = None) -> list` | Connected nodes, optionally filtered by edge type |
 | `get_cluster_tree` | `(graph: dict) -> dict` | Hierarchical cluster structure |
 | `find_questions` | `(graph: dict, query: str) -> list` | Substring match across nodes' questions fields |
+| `add_cluster` | `(graph: dict, id: str, name: str, parent: str = None) -> dict` | Create a cluster, optionally nested under a parent |
 | `stats` | `(graph: dict) -> dict` | Counts by type, cluster sizes, edge counts |
 
 ### Schema validation
