@@ -1,0 +1,2931 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Learning Dashboard — Knowledge Graph</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: #0f172a; color: #e2e8f0; display: flex; height: 100vh; overflow: hidden; }
+
+  /* Sidebar */
+  #sidebar { width: 320px; background: #1e293b; border-right: 1px solid #334155; overflow-y: auto; padding: 16px; flex-shrink: 0; }
+  #sidebar h1 { font-size: 18px; margin-bottom: 4px; color: #f8fafc; }
+  #sidebar .subtitle { font-size: 12px; color: #94a3b8; margin-bottom: 16px; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 16px; }
+  .stat-card { background: #0f172a; border-radius: 8px; padding: 10px; text-align: center; }
+  .stat-card .number { font-size: 24px; font-weight: 700; color: #f8fafc; }
+  .stat-card .label { font-size: 10px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; }
+
+  .section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #64748b; margin: 16px 0 8px; font-weight: 600; }
+
+  .cluster-item { display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 6px; cursor: pointer; margin-bottom: 4px; transition: background 0.15s; }
+  .cluster-item:hover { background: #334155; }
+  .cluster-item.active { background: #334155; border: 1px solid #475569; }
+  .cluster-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .cluster-name { font-size: 13px; flex: 1; }
+  .cluster-count { font-size: 11px; color: #64748b; }
+
+  .filter-group { margin-bottom: 12px; }
+  .filter-group label { font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px; }
+  .filter-group input { width: 100%; padding: 6px 10px; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; font-size: 13px; }
+  .filter-group input:focus { outline: none; border-color: #6366f1; }
+
+  .type-filters { display: flex; gap: 6px; margin-bottom: 12px; }
+  .type-btn { padding: 4px 10px; border-radius: 12px; border: 1px solid #334155; background: transparent; color: #94a3b8; font-size: 11px; cursor: pointer; transition: all 0.15s; }
+  .type-btn.active { background: #334155; color: #f8fafc; border-color: #475569; }
+  .type-btn:hover { border-color: #475569; }
+
+  /* Detail Panel */
+  #detail { display: none; position: absolute; right: 16px; top: 16px; width: 360px; max-height: calc(100vh - 32px); background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 20px; overflow-y: auto; z-index: 10; box-shadow: 0 20px 40px rgba(0,0,0,0.4); }
+  #detail h2 { font-size: 16px; margin-bottom: 4px; color: #f8fafc; }
+  #detail .meta { font-size: 12px; color: #94a3b8; margin-bottom: 12px; }
+  #detail .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; margin-right: 4px; }
+  #detail .badge-concept { background: #312e81; color: #a5b4fc; }
+  #detail .badge-resource { background: #064e3b; color: #6ee7b7; }
+  #detail .badge-note { background: #713f12; color: #fde68a; }
+  #detail .section { margin-top: 12px; }
+  #detail .section h3 { font-size: 12px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+  #detail .link-item { padding: 4px 0; font-size: 13px; }
+  #detail .link-item a { color: #93c5fd; text-decoration: none; }
+  #detail .link-item a:hover { text-decoration: underline; }
+  #detail .question { padding: 4px 0; font-size: 13px; color: #cbd5e1; }
+  #detail .edge-item { padding: 4px 0; font-size: 12px; color: #94a3b8; }
+  #detail .edge-rel { color: #6366f1; font-weight: 600; }
+  #detail .close-btn { position: absolute; top: 12px; right: 12px; background: none; border: none; color: #64748b; cursor: pointer; font-size: 18px; }
+  #detail .close-btn:hover { color: #f8fafc; }
+  #detail .url-link { display: block; margin-top: 8px; padding: 8px 12px; background: #0f172a; border-radius: 6px; color: #93c5fd; text-decoration: none; font-size: 13px; word-break: break-all; }
+  #detail .url-link:hover { background: #1e3a5f; }
+
+  /* Graph Area */
+  #graph-area { flex: 1; position: relative; }
+  svg { width: 100%; height: 100%; }
+  .link { stroke-opacity: 0.3; }
+  .link:hover { stroke-opacity: 0.8; }
+  .node { cursor: pointer; }
+  .node circle { stroke: #0f172a; stroke-width: 1.5px; transition: r 0.2s; }
+  .node:hover circle { r: 12; }
+  .node text { font-size: 9px; fill: #94a3b8; pointer-events: none; }
+  .node.highlighted circle { stroke: #f8fafc; stroke-width: 2.5px; }
+  .node.dimmed { opacity: 0.15; }
+  .link.dimmed { opacity: 0.05; }
+
+  /* Legend */
+  #legend { position: absolute; bottom: 16px; left: 16px; background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 12px; font-size: 11px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+  .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .legend-line { width: 20px; height: 2px; }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <h1>Learning Dashboard</h1>
+  <p class="subtitle">Personal Knowledge Graph</p>
+
+  <div class="stats">
+    <div class="stat-card"><div class="number" id="stat-concepts">0</div><div class="label">Concepts</div></div>
+    <div class="stat-card"><div class="number" id="stat-resources">0</div><div class="label">Resources</div></div>
+    <div class="stat-card"><div class="number" id="stat-edges">0</div><div class="label">Connections</div></div>
+    <div class="stat-card"><div class="number" id="stat-clusters">0</div><div class="label">Clusters</div></div>
+  </div>
+
+  <div class="filter-group">
+    <label>Search</label>
+    <input type="text" id="search" placeholder="Search concepts, resources...">
+  </div>
+
+  <div class="type-filters">
+    <button class="type-btn active" data-type="all">All</button>
+    <button class="type-btn" data-type="concept">Concepts</button>
+    <button class="type-btn" data-type="resource">Resources</button>
+    <button class="type-btn" data-type="note">Notes</button>
+  </div>
+
+  <div class="section-title">Clusters</div>
+  <div id="cluster-list"></div>
+</div>
+
+<div id="graph-area">
+  <svg id="graph"></svg>
+
+  <div id="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:#6366f1; width:12px; height:12px;"></div> Concept</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#6366f1; width:7px; height:7px;"></div> Resource</div>
+    <div class="legend-item"><div class="legend-line" style="background:#6366f1;"></div> learned_from</div>
+    <div class="legend-item"><div class="legend-line" style="background:#f59e0b;"></div> extends/depends</div>
+  </div>
+</div>
+
+<div id="detail">
+  <button class="close-btn" onclick="closeDetail()">&times;</button>
+  <div id="detail-content"></div>
+</div>
+
+<script>
+const graphData = {
+  "nodes": [
+    {
+      "id": "self-attention",
+      "name": "Self-Attention",
+      "type": "concept",
+      "cluster": "transformer-foundations",
+      "color": "#6366f1",
+      "size": 8,
+      "depth": "intro",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "transformer",
+        "attention",
+        "core"
+      ],
+      "questions": [
+        "How does self-attention compute relationships between all positions in a sequence?",
+        "Why is self-attention O(n^2) in sequence length?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "multi-head-attention",
+      "name": "Multi-Head Attention",
+      "type": "concept",
+      "cluster": "transformer-foundations",
+      "color": "#6366f1",
+      "size": 8,
+      "depth": "intro",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "transformer",
+        "attention",
+        "core"
+      ],
+      "questions": [
+        "Why use multiple attention heads instead of a single one?",
+        "How do different heads learn different relationship patterns?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "transformer-architecture",
+      "name": "Transformer Architecture",
+      "type": "concept",
+      "cluster": "transformer-foundations",
+      "color": "#6366f1",
+      "size": 8,
+      "depth": "intro",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "transformer",
+        "architecture",
+        "deep-learning"
+      ],
+      "questions": [
+        "What are the key components of the original Transformer?",
+        "Why did decoder-only architectures become dominant for LLMs?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "positional-encoding",
+      "name": "Positional Encoding",
+      "type": "concept",
+      "cluster": "transformer-foundations",
+      "color": "#6366f1",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "transformer",
+        "position",
+        "encoding"
+      ],
+      "questions": [
+        "Why do transformers need positional encoding?",
+        "How does RoPE enable better length generalization than sinusoidal encoding?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "rotary-position-embedding",
+      "name": "Rotary Position Embedding (RoPE)",
+      "type": "concept",
+      "cluster": "transformer-foundations",
+      "color": "#6366f1",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "transformer",
+        "position",
+        "rope",
+        "long-context"
+      ],
+      "questions": [
+        "How does RoPE encode relative position via rotation matrices?",
+        "Why has RoPE become the default positional encoding for modern LLMs?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "masked-language-modeling",
+      "name": "Masked Language Modeling",
+      "type": "concept",
+      "cluster": "transformer-foundations",
+      "color": "#6366f1",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "bert",
+        "pre-training",
+        "encoder"
+      ],
+      "questions": [
+        "How does MLM differ from autoregressive language modeling?",
+        "Why is bidirectional context important for representation learning?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "multi-latent-attention",
+      "name": "Multi-Latent Attention (MLA)",
+      "type": "concept",
+      "cluster": "transformer-foundations",
+      "color": "#6366f1",
+      "size": 8,
+      "depth": "research",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "deepseek",
+        "attention",
+        "efficiency"
+      ],
+      "questions": [
+        "How does MLA reduce KV cache memory compared to standard MHA?",
+        "What is the latent compression bottleneck in MLA?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "scaling-laws",
+      "name": "Neural Scaling Laws",
+      "type": "concept",
+      "cluster": "scaling-and-training",
+      "color": "#f59e0b",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "scaling",
+        "compute",
+        "training"
+      ],
+      "questions": [
+        "How do loss and performance scale with parameters, data, and compute?",
+        "What are the practical implications of scaling laws for training budget allocation?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "compute-optimal-training",
+      "name": "Compute-Optimal Training (Chinchilla)",
+      "type": "concept",
+      "cluster": "scaling-and-training",
+      "color": "#f59e0b",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "scaling",
+        "chinchilla",
+        "training-efficiency"
+      ],
+      "questions": [
+        "Why were most pre-Chinchilla models undertrained on tokens?",
+        "How do you determine the optimal parameter-to-token ratio for a compute budget?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "in-context-learning",
+      "name": "In-Context Learning",
+      "type": "concept",
+      "cluster": "scaling-and-training",
+      "color": "#f59e0b",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "gpt3",
+        "prompting",
+        "few-shot"
+      ],
+      "questions": [
+        "How can LLMs learn new tasks from examples in the prompt without gradient updates?",
+        "What scale of model is needed for reliable in-context learning?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "synthetic-data-training",
+      "name": "Synthetic Data Training",
+      "type": "concept",
+      "cluster": "representation-and-data",
+      "color": "#84cc16",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "data-quality",
+        "phi",
+        "textbooks"
+      ],
+      "questions": [
+        "How can high-quality synthetic data outperform larger web-scraped datasets?",
+        "What are the risks of model collapse from synthetic data?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "large-scale-training",
+      "name": "Large-Scale Training Orchestration",
+      "type": "concept",
+      "cluster": "scaling-and-training",
+      "color": "#f59e0b",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "distributed-training",
+        "palm",
+        "tpu",
+        "gpu"
+      ],
+      "questions": [
+        "How do you efficiently train across thousands of accelerators?",
+        "What are the key challenges in distributed training (communication, fault tolerance)?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "gradient-accumulation",
+      "name": "Gradient Accumulation",
+      "type": "concept",
+      "cluster": "scaling-and-training",
+      "color": "#f59e0b",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "training",
+        "optimization",
+        "memory"
+      ],
+      "questions": [
+        "How does gradient accumulation simulate larger batch sizes with limited GPU memory?",
+        "What are the trade-offs between accumulation steps and training speed?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "instruction-tuning",
+      "name": "Instruction Tuning",
+      "type": "concept",
+      "cluster": "alignment-and-post-training",
+      "color": "#ef4444",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "alignment",
+        "instructgpt",
+        "sft"
+      ],
+      "questions": [
+        "How does instruction tuning change model behavior compared to base pre-training?",
+        "What is the role of SFT in the RLHF pipeline?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "rlhf",
+      "name": "Reinforcement Learning from Human Feedback",
+      "type": "concept",
+      "cluster": "alignment-and-post-training",
+      "color": "#ef4444",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "alignment",
+        "ppo",
+        "reward-model"
+      ],
+      "questions": [
+        "How does RLHF align model outputs with human preferences?",
+        "What are the instability issues with PPO-based RLHF?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "direct-preference-optimization",
+      "name": "Direct Preference Optimization (DPO)",
+      "type": "concept",
+      "cluster": "alignment-and-post-training",
+      "color": "#ef4444",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "alignment",
+        "dpo",
+        "preference-learning"
+      ],
+      "questions": [
+        "How does DPO eliminate the need for a separate reward model?",
+        "Why is DPO more stable than PPO-based RLHF?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "constitutional-ai",
+      "name": "Constitutional AI",
+      "type": "concept",
+      "cluster": "alignment-and-post-training",
+      "color": "#ef4444",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "alignment",
+        "anthropic",
+        "safety"
+      ],
+      "questions": [
+        "How does Constitutional AI use AI feedback instead of human feedback?",
+        "What role do constitutional principles play in training harmless models?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "chain-of-thought",
+      "name": "Chain-of-Thought Prompting",
+      "type": "concept",
+      "cluster": "reasoning-and-agents",
+      "color": "#10b981",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "reasoning",
+        "prompting",
+        "cot"
+      ],
+      "questions": [
+        "How does chain-of-thought prompting improve reasoning accuracy?",
+        "What types of tasks benefit most from CoT prompting?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "react-framework",
+      "name": "ReAct Framework",
+      "type": "concept",
+      "cluster": "reasoning-and-agents",
+      "color": "#10b981",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "agents",
+        "tool-use",
+        "reasoning"
+      ],
+      "questions": [
+        "How does interleaving reasoning and action improve task completion?",
+        "Why is ReAct foundational for modern AI agent architectures?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "rl-for-reasoning",
+      "name": "RL for Reasoning (DeepSeek-R1 Style)",
+      "type": "concept",
+      "cluster": "reasoning-and-agents",
+      "color": "#10b981",
+      "size": 8,
+      "depth": "research",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "reasoning",
+        "reinforcement-learning",
+        "deepseek"
+      ],
+      "questions": [
+        "How can pure RL without SFT induce self-verification and structured reasoning?",
+        "What emergent reasoning behaviors appear from large-scale RL training?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "mixture-of-experts",
+      "name": "Mixture of Experts (MoE)",
+      "type": "concept",
+      "cluster": "mixture-of-experts",
+      "color": "#8b5cf6",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "moe",
+        "sparse",
+        "conditional-computation"
+      ],
+      "questions": [
+        "How does MoE achieve large model capacity with constant inference cost?",
+        "What is the routing problem in MoE and how is load balancing handled?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "sparse-upcycling",
+      "name": "Sparse Upcycling",
+      "type": "concept",
+      "cluster": "mixture-of-experts",
+      "color": "#8b5cf6",
+      "size": 8,
+      "depth": "research",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "moe",
+        "dense-to-sparse",
+        "compute-reuse"
+      ],
+      "questions": [
+        "How can dense checkpoints be converted into MoE models efficiently?",
+        "Why is sparse upcycling critical for iterative scaling?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "flash-attention",
+      "name": "FlashAttention",
+      "type": "concept",
+      "cluster": "inference-optimization",
+      "color": "#06b6d4",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "attention",
+        "memory",
+        "gpu",
+        "io-awareness"
+      ],
+      "questions": [
+        "How does FlashAttention reduce memory from O(n^2) to O(n) via tiling?",
+        "Why is IO-awareness key to FlashAttention performance on GPU?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "llm-inference",
+      "name": "LLM Inference Engineering",
+      "type": "concept",
+      "cluster": "inference-optimization",
+      "color": "#06b6d4",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "inference",
+        "production",
+        "latency"
+      ],
+      "questions": [
+        "What are the key bottlenecks in serving LLMs at scale?",
+        "How do batching strategies affect throughput vs latency trade-offs?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "batching-strategies",
+      "name": "Batching Strategies",
+      "type": "concept",
+      "cluster": "inference-optimization",
+      "color": "#06b6d4",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "inference",
+        "batching",
+        "continuous-batching"
+      ],
+      "questions": [
+        "How does continuous batching improve GPU utilization for inference?",
+        "What is the difference between static and dynamic batching?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "gpu-memory-management",
+      "name": "GPU Memory Management",
+      "type": "concept",
+      "cluster": "inference-optimization",
+      "color": "#06b6d4",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "gpu",
+        "memory",
+        "vram",
+        "inference"
+      ],
+      "questions": [
+        "How does KV cache size affect concurrent session limits?",
+        "What strategies exist for managing VRAM during multi-user inference?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "model-sharding",
+      "name": "Model Sharding & Parallelism",
+      "type": "concept",
+      "cluster": "inference-optimization",
+      "color": "#06b6d4",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "distributed",
+        "tensor-parallelism",
+        "pipeline-parallelism"
+      ],
+      "questions": [
+        "When should you use tensor parallelism vs pipeline parallelism?",
+        "How does model sharding across GPUs affect inference latency?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "model-distillation",
+      "name": "Model Distillation",
+      "type": "concept",
+      "cluster": "inference-optimization",
+      "color": "#06b6d4",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "compression",
+        "knowledge-distillation",
+        "deployment"
+      ],
+      "questions": [
+        "How does knowledge distillation transfer capabilities from large to small models?",
+        "What are the trade-offs between distillation and quantization?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "mechanistic-interpretability",
+      "name": "Mechanistic Interpretability",
+      "type": "concept",
+      "cluster": "mechanistic-interpretability",
+      "color": "#ec4899",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "interpretability",
+        "features",
+        "safety"
+      ],
+      "questions": [
+        "How can we decompose neural network activations into interpretable features?",
+        "What role does mechanistic interpretability play in AI safety?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "sparse-autoencoders",
+      "name": "Sparse Autoencoders (SAEs)",
+      "type": "concept",
+      "cluster": "mechanistic-interpretability",
+      "color": "#ec4899",
+      "size": 8,
+      "depth": "research",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "interpretability",
+        "sae",
+        "feature-extraction"
+      ],
+      "questions": [
+        "How do sparse autoencoders extract monosemantic features from polysemantic neurons?",
+        "What did scaling SAEs to Claude 3 Sonnet reveal about model internals?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "transformerlens",
+      "name": "TransformerLens",
+      "type": "concept",
+      "cluster": "mechanistic-interpretability",
+      "color": "#ec4899",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "interpretability",
+        "tools",
+        "neel-nanda"
+      ],
+      "questions": [
+        "How does TransformerLens enable mechanistic interpretability research on GPT models?",
+        "What types of algorithmic tasks can TransformerLens help analyze?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "local-llm-deployment",
+      "name": "Local LLM Deployment",
+      "type": "concept",
+      "cluster": "llm-hardware",
+      "color": "#78716c",
+      "size": 8,
+      "depth": "intro",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "hardware",
+        "local",
+        "deployment",
+        "gpu"
+      ],
+      "questions": [
+        "What hardware is needed to run LLMs locally (GPU VRAM, RAM requirements)?",
+        "How do consumer GPUs compare to data center GPUs for LLM inference?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "retrieval-augmented-generation",
+      "name": "Retrieval-Augmented Generation (RAG)",
+      "type": "concept",
+      "cluster": "representation-and-data",
+      "color": "#84cc16",
+      "size": 8,
+      "depth": "intermediate",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "rag",
+        "retrieval",
+        "grounding"
+      ],
+      "questions": [
+        "How does RAG combine parametric and non-parametric knowledge?",
+        "What are the key challenges in building production RAG systems?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "platonic-representation",
+      "name": "Platonic Representation Hypothesis",
+      "type": "concept",
+      "cluster": "representation-and-data",
+      "color": "#84cc16",
+      "size": 8,
+      "depth": "research",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "representation",
+        "convergence",
+        "multimodal"
+      ],
+      "questions": [
+        "Do neural networks converge toward a shared representation of reality?",
+        "What evidence supports cross-modal representational alignment?"
+      ],
+      "body": "",
+      "resource_type": ""
+    },
+    {
+      "id": "res-attention-is-all-you-need",
+      "name": "Attention Is All You Need",
+      "type": "resource",
+      "cluster": "transformer-foundations",
+      "color": "#6366f1",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/1706.03762",
+      "quality": 5,
+      "tags": [
+        "transformer",
+        "attention",
+        "seminal"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-illustrated-transformer",
+      "name": "The Illustrated Transformer",
+      "type": "resource",
+      "cluster": "transformer-foundations",
+      "color": "#6366f1",
+      "size": 5,
+      "depth": "",
+      "url": "https://jalammar.github.io/illustrated-transformer/",
+      "quality": 5,
+      "tags": [
+        "transformer",
+        "tutorial",
+        "visual"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "blog"
+    },
+    {
+      "id": "res-bert",
+      "name": "BERT: Pre-training of Deep Bidirectional Transformers",
+      "type": "resource",
+      "cluster": "transformer-foundations",
+      "color": "#6366f1",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/1810.04805",
+      "quality": 5,
+      "tags": [
+        "bert",
+        "encoder",
+        "pre-training"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-gpt3",
+      "name": "Language Models are Few-Shot Learners (GPT-3)",
+      "type": "resource",
+      "cluster": "scaling-and-training",
+      "color": "#f59e0b",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/2005.14165",
+      "quality": 5,
+      "tags": [
+        "gpt3",
+        "few-shot",
+        "scaling"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-scaling-laws",
+      "name": "Scaling Laws for Neural Language Models",
+      "type": "resource",
+      "cluster": "scaling-and-training",
+      "color": "#f59e0b",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/2001.08361",
+      "quality": 5,
+      "tags": [
+        "scaling",
+        "compute",
+        "empirical"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-chinchilla",
+      "name": "Training Compute-Optimal Large Language Models (Chinchilla)",
+      "type": "resource",
+      "cluster": "scaling-and-training",
+      "color": "#f59e0b",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/2203.15556",
+      "quality": 5,
+      "tags": [
+        "scaling",
+        "chinchilla",
+        "compute-optimal"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-llama",
+      "name": "LLaMA: Open and Efficient Foundation Language Models",
+      "type": "resource",
+      "cluster": "transformer-foundations",
+      "color": "#6366f1",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/2302.13971",
+      "quality": 5,
+      "tags": [
+        "llama",
+        "open-weight",
+        "architecture"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-roformer",
+      "name": "RoFormer: Rotary Position Embedding",
+      "type": "resource",
+      "cluster": "transformer-foundations",
+      "color": "#6366f1",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/2104.09864",
+      "quality": 4,
+      "tags": [
+        "rope",
+        "position",
+        "encoding"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-flash-attention",
+      "name": "FlashAttention: Fast and Memory-Efficient Exact Attention",
+      "type": "resource",
+      "cluster": "inference-optimization",
+      "color": "#06b6d4",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/2205.14135",
+      "quality": 5,
+      "tags": [
+        "attention",
+        "memory",
+        "gpu",
+        "efficiency"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-rag",
+      "name": "Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks",
+      "type": "resource",
+      "cluster": "representation-and-data",
+      "color": "#84cc16",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/2005.11401",
+      "quality": 4,
+      "tags": [
+        "rag",
+        "retrieval",
+        "knowledge"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-instructgpt",
+      "name": "Training Language Models to Follow Instructions (InstructGPT)",
+      "type": "resource",
+      "cluster": "alignment-and-post-training",
+      "color": "#ef4444",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/2203.02155",
+      "quality": 5,
+      "tags": [
+        "alignment",
+        "rlhf",
+        "instruction-tuning"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-dpo",
+      "name": "Direct Preference Optimization (DPO)",
+      "type": "resource",
+      "cluster": "alignment-and-post-training",
+      "color": "#ef4444",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/2305.18290",
+      "quality": 4,
+      "tags": [
+        "dpo",
+        "alignment",
+        "preference"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-chain-of-thought",
+      "name": "Chain-of-Thought Prompting Elicits Reasoning",
+      "type": "resource",
+      "cluster": "reasoning-and-agents",
+      "color": "#10b981",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/2201.11903",
+      "quality": 5,
+      "tags": [
+        "reasoning",
+        "prompting",
+        "cot"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-react",
+      "name": "ReAct: Synergizing Reasoning and Acting",
+      "type": "resource",
+      "cluster": "reasoning-and-agents",
+      "color": "#10b981",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/2210.03629",
+      "quality": 5,
+      "tags": [
+        "agents",
+        "reasoning",
+        "tool-use"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-deepseek-r1",
+      "name": "DeepSeek-R1: Incentivizing Reasoning via RL",
+      "type": "resource",
+      "cluster": "reasoning-and-agents",
+      "color": "#10b981",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/2501.12948",
+      "quality": 5,
+      "tags": [
+        "reasoning",
+        "rl",
+        "deepseek"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-qwen3",
+      "name": "Qwen3 Technical Report",
+      "type": "resource",
+      "cluster": "mixture-of-experts",
+      "color": "#8b5cf6",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/2505.09388",
+      "quality": 4,
+      "tags": [
+        "qwen",
+        "moe",
+        "reasoning"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-sparse-gated-moe",
+      "name": "Outrageously Large Neural Networks: Sparsely-Gated MoE",
+      "type": "resource",
+      "cluster": "mixture-of-experts",
+      "color": "#8b5cf6",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/1701.06538",
+      "quality": 5,
+      "tags": [
+        "moe",
+        "sparse",
+        "gating"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-switch-transformers",
+      "name": "Switch Transformers",
+      "type": "resource",
+      "cluster": "mixture-of-experts",
+      "color": "#8b5cf6",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/2101.03961",
+      "quality": 4,
+      "tags": [
+        "moe",
+        "switch",
+        "trillion-parameter"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-mixtral",
+      "name": "Mixtral of Experts",
+      "type": "resource",
+      "cluster": "mixture-of-experts",
+      "color": "#8b5cf6",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/2401.04088",
+      "quality": 4,
+      "tags": [
+        "moe",
+        "mixtral",
+        "open-weight"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-sparse-upcycling",
+      "name": "Sparse Upcycling: MoE from Dense Checkpoints",
+      "type": "resource",
+      "cluster": "mixture-of-experts",
+      "color": "#8b5cf6",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/2212.05055",
+      "quality": 4,
+      "tags": [
+        "moe",
+        "upcycling",
+        "dense-to-sparse"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-platonic-representation",
+      "name": "The Platonic Representation Hypothesis",
+      "type": "resource",
+      "cluster": "representation-and-data",
+      "color": "#84cc16",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/2405.07987",
+      "quality": 4,
+      "tags": [
+        "representation",
+        "convergence",
+        "theory"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-textbooks-all-you-need",
+      "name": "Textbooks Are All You Need",
+      "type": "resource",
+      "cluster": "representation-and-data",
+      "color": "#84cc16",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/2306.11644",
+      "quality": 4,
+      "tags": [
+        "data-quality",
+        "phi",
+        "synthetic-data"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-scaling-monosemanticity",
+      "name": "Scaling Monosemanticity: Interpretable Features from Claude 3 Sonnet",
+      "type": "resource",
+      "cluster": "mechanistic-interpretability",
+      "color": "#ec4899",
+      "size": 5,
+      "depth": "",
+      "url": "https://transformer-circuits.pub/2024/scaling-monosemanticity/",
+      "quality": 5,
+      "tags": [
+        "interpretability",
+        "sae",
+        "anthropic"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-palm",
+      "name": "PaLM: Scaling Language Modeling with Pathways",
+      "type": "resource",
+      "cluster": "scaling-and-training",
+      "color": "#f59e0b",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/2204.02311",
+      "quality": 4,
+      "tags": [
+        "palm",
+        "distributed-training",
+        "google"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-glam",
+      "name": "GLaM: Efficient Scaling with Mixture-of-Experts",
+      "type": "resource",
+      "cluster": "mixture-of-experts",
+      "color": "#8b5cf6",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/2112.06905",
+      "quality": 4,
+      "tags": [
+        "moe",
+        "glam",
+        "scaling"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-smol-playbook",
+      "name": "The Smol Training Playbook",
+      "type": "resource",
+      "cluster": "scaling-and-training",
+      "color": "#f59e0b",
+      "size": 5,
+      "depth": "",
+      "url": "https://huggingface.co/spaces/HuggingFaceTB/smol-training-playbook",
+      "quality": 4,
+      "tags": [
+        "training",
+        "handbook",
+        "huggingface"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "blog"
+    },
+    {
+      "id": "res-t5",
+      "name": "T5: Exploring the Limits of Transfer Learning",
+      "type": "resource",
+      "cluster": "transformer-foundations",
+      "color": "#6366f1",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/1910.10683",
+      "quality": 5,
+      "tags": [
+        "t5",
+        "transfer-learning",
+        "text-to-text"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-toolformer",
+      "name": "Toolformer: Language Models Can Teach Themselves to Use Tools",
+      "type": "resource",
+      "cluster": "reasoning-and-agents",
+      "color": "#10b981",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/2302.04761",
+      "quality": 4,
+      "tags": [
+        "tools",
+        "agents",
+        "self-supervised"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-gshard",
+      "name": "GShard: Scaling Giant Models with Conditional Computation",
+      "type": "resource",
+      "cluster": "mixture-of-experts",
+      "color": "#8b5cf6",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/2006.16668",
+      "quality": 4,
+      "tags": [
+        "moe",
+        "sharding",
+        "distributed"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-adaptive-mixtures",
+      "name": "Adaptive Mixtures of Local Experts (1991)",
+      "type": "resource",
+      "cluster": "mixture-of-experts",
+      "color": "#8b5cf6",
+      "size": 5,
+      "depth": "",
+      "url": "https://www.cs.toronto.edu/~hinton/absps/jjnh91.pdf",
+      "quality": 4,
+      "tags": [
+        "moe",
+        "classic",
+        "foundations"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-hierarchical-moe",
+      "name": "Hierarchical Mixtures of Experts (1994)",
+      "type": "resource",
+      "cluster": "mixture-of-experts",
+      "color": "#8b5cf6",
+      "size": 5,
+      "depth": "",
+      "url": "https://doi.org/10.1162/neco.1994.6.2.181",
+      "quality": 4,
+      "tags": [
+        "moe",
+        "hierarchical",
+        "em-algorithm"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-constitutional-ai",
+      "name": "Constitutional AI: Harmlessness from AI Feedback",
+      "type": "resource",
+      "cluster": "alignment-and-post-training",
+      "color": "#ef4444",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/2212.08073",
+      "quality": 5,
+      "tags": [
+        "alignment",
+        "anthropic",
+        "constitutional"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-mapping-the-mind",
+      "name": "Mapping the Mind of a Large Language Model",
+      "type": "resource",
+      "cluster": "mechanistic-interpretability",
+      "color": "#ec4899",
+      "size": 5,
+      "depth": "",
+      "url": "https://www.anthropic.com/research/mapping-mind-language-model",
+      "quality": 5,
+      "tags": [
+        "interpretability",
+        "anthropic",
+        "features"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "blog"
+    },
+    {
+      "id": "res-deepseek-v3",
+      "name": "DeepSeek-V3 Technical Report",
+      "type": "resource",
+      "cluster": "transformer-foundations",
+      "color": "#6366f1",
+      "size": 5,
+      "depth": "",
+      "url": "https://arxiv.org/abs/2412.19437",
+      "quality": 5,
+      "tags": [
+        "deepseek",
+        "mla",
+        "mtp",
+        "efficiency"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "paper"
+    },
+    {
+      "id": "res-ahead-of-ai",
+      "name": "Ahead of AI Newsletter (Sebastian Raschka)",
+      "type": "resource",
+      "cluster": "scaling-and-training",
+      "color": "#f59e0b",
+      "size": 5,
+      "depth": "",
+      "url": "https://magazine.sebastianraschka.com",
+      "quality": 5,
+      "tags": [
+        "newsletter",
+        "analysis",
+        "learning"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "blog"
+    },
+    {
+      "id": "res-interconnects",
+      "name": "Interconnects Newsletter (Nathan Lambert)",
+      "type": "resource",
+      "cluster": "alignment-and-post-training",
+      "color": "#ef4444",
+      "size": 5,
+      "depth": "",
+      "url": "https://www.interconnects.ai",
+      "quality": 5,
+      "tags": [
+        "newsletter",
+        "rlhf",
+        "alignment"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "blog"
+    },
+    {
+      "id": "res-karpathy-llm-c",
+      "name": "Andrej Karpathy's LLM.c",
+      "type": "resource",
+      "cluster": "scaling-and-training",
+      "color": "#f59e0b",
+      "size": 5,
+      "depth": "",
+      "url": "https://github.com/karpathy/llm.c",
+      "quality": 5,
+      "tags": [
+        "code",
+        "c",
+        "cuda",
+        "training"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "blog"
+    },
+    {
+      "id": "res-hf-daily-papers",
+      "name": "Hugging Face Daily Papers",
+      "type": "resource",
+      "cluster": "scaling-and-training",
+      "color": "#f59e0b",
+      "size": 5,
+      "depth": "",
+      "url": "https://huggingface.co/papers",
+      "quality": 4,
+      "tags": [
+        "papers",
+        "daily",
+        "research"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "blog"
+    },
+    {
+      "id": "res-mit-deep-learning-2024",
+      "name": "MIT 6.7960 Deep Learning Fall 2024",
+      "type": "resource",
+      "cluster": "transformer-foundations",
+      "color": "#6366f1",
+      "size": 5,
+      "depth": "",
+      "url": "https://ocw.mit.edu/courses/6-7960-deep-learning-fall-2024/download/",
+      "quality": 5,
+      "tags": [
+        "course",
+        "mit",
+        "deep-learning"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "course"
+    },
+    {
+      "id": "res-cs336-stanford",
+      "name": "CS336 Stanford (Lectures 5-11)",
+      "type": "resource",
+      "cluster": "inference-optimization",
+      "color": "#06b6d4",
+      "size": 5,
+      "depth": "",
+      "url": "https://buff.ly/9o4jRxl",
+      "quality": 4,
+      "tags": [
+        "course",
+        "stanford",
+        "inference"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "course"
+    },
+    {
+      "id": "res-gpu-mode",
+      "name": "GPU MODE",
+      "type": "resource",
+      "cluster": "inference-optimization",
+      "color": "#06b6d4",
+      "size": 5,
+      "depth": "",
+      "url": "https://buff.ly/bPEHYL0",
+      "quality": 4,
+      "tags": [
+        "gpu",
+        "cuda",
+        "programming"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "course"
+    },
+    {
+      "id": "res-llm-inference-patterns",
+      "name": "LLM Inference Patterns",
+      "type": "resource",
+      "cluster": "inference-optimization",
+      "color": "#06b6d4",
+      "size": 5,
+      "depth": "",
+      "url": "https://buff.ly/4ASDS5c",
+      "quality": 3,
+      "tags": [
+        "inference",
+        "patterns"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "video"
+    },
+    {
+      "id": "res-llm-inference-nvidia",
+      "name": "LLM Inference (NVIDIA)",
+      "type": "resource",
+      "cluster": "inference-optimization",
+      "color": "#06b6d4",
+      "size": 5,
+      "depth": "",
+      "url": "https://buff.ly/muDMcor",
+      "quality": 4,
+      "tags": [
+        "inference",
+        "nvidia",
+        "gpu"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "video"
+    },
+    {
+      "id": "res-gpu-perf-engineering",
+      "name": "GPU Performance Engineering (E. Andere)",
+      "type": "resource",
+      "cluster": "inference-optimization",
+      "color": "#06b6d4",
+      "size": 5,
+      "depth": "",
+      "url": "https://buff.ly/sfGJNMK",
+      "quality": 4,
+      "tags": [
+        "gpu",
+        "performance",
+        "engineering"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "blog"
+    },
+    {
+      "id": "res-ai-perf-engineering",
+      "name": "AI Performance Engineering (C. Fregly)",
+      "type": "resource",
+      "cluster": "inference-optimization",
+      "color": "#06b6d4",
+      "size": 5,
+      "depth": "",
+      "url": "https://buff.ly/8ey3GPa",
+      "quality": 4,
+      "tags": [
+        "performance",
+        "engineering",
+        "ai"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "blog"
+    },
+    {
+      "id": "res-inside-nvidia-gpus",
+      "name": "Inside NVIDIA GPUs (A. Gordic)",
+      "type": "resource",
+      "cluster": "llm-hardware",
+      "color": "#78716c",
+      "size": 5,
+      "depth": "",
+      "url": "https://buff.ly/wmgNwMg",
+      "quality": 4,
+      "tags": [
+        "gpu",
+        "nvidia",
+        "architecture"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "blog"
+    },
+    {
+      "id": "res-understanding-llm-inference",
+      "name": "Understanding LLM Inference (article)",
+      "type": "resource",
+      "cluster": "inference-optimization",
+      "color": "#06b6d4",
+      "size": 5,
+      "depth": "",
+      "url": "https://buff.ly/NrNU3Qz",
+      "quality": 4,
+      "tags": [
+        "inference",
+        "guide"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "blog"
+    },
+    {
+      "id": "res-transformer-step-by-step-math",
+      "name": "Understanding Transformer by Step-by-Step Math",
+      "type": "resource",
+      "cluster": "transformer-foundations",
+      "color": "#6366f1",
+      "size": 5,
+      "depth": "",
+      "url": "https://medium.com/@sujankarki269/understanding-transformer-by-step-by-step-math-9ba09bb4ac88",
+      "quality": 4,
+      "tags": [
+        "transformer",
+        "math",
+        "tutorial"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "blog"
+    },
+    {
+      "id": "res-transformers-from-scratch",
+      "name": "Transformers from Scratch (Brandon Rohrer)",
+      "type": "resource",
+      "cluster": "transformer-foundations",
+      "color": "#6366f1",
+      "size": 5,
+      "depth": "",
+      "url": "https://brandonrohrer.com/transformers.html",
+      "quality": 4,
+      "tags": [
+        "transformer",
+        "math",
+        "visual"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "blog"
+    },
+    {
+      "id": "res-transformer-explainer",
+      "name": "LLM Transformer Model Visually Explained (Interactive)",
+      "type": "resource",
+      "cluster": "transformer-foundations",
+      "color": "#6366f1",
+      "size": 5,
+      "depth": "",
+      "url": "https://poloclub.github.io/transformer-explainer/",
+      "quality": 5,
+      "tags": [
+        "transformer",
+        "interactive",
+        "visualization"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "blog"
+    },
+    {
+      "id": "res-getting-started-mech-interp",
+      "name": "Getting Started in Mechanistic Interpretability",
+      "type": "resource",
+      "cluster": "mechanistic-interpretability",
+      "color": "#ec4899",
+      "size": 5,
+      "depth": "",
+      "url": "https://transformerlensorg.github.io/TransformerLens/content/getting_started_mech_interp.html",
+      "quality": 4,
+      "tags": [
+        "interpretability",
+        "transformerlens",
+        "tutorial"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "blog"
+    },
+    {
+      "id": "res-neel-nanda-guide",
+      "name": "Neel Nanda's Mechanistic Interpretability Guide",
+      "type": "resource",
+      "cluster": "mechanistic-interpretability",
+      "color": "#ec4899",
+      "size": 5,
+      "depth": "",
+      "url": "https://www.neelnanda.io/mechanistic-interpretability/getting-started-old",
+      "quality": 5,
+      "tags": [
+        "interpretability",
+        "neel-nanda",
+        "guide"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "blog"
+    },
+    {
+      "id": "res-transformerlens-intro",
+      "name": "TransformerLens Intro (GitHub)",
+      "type": "resource",
+      "cluster": "mechanistic-interpretability",
+      "color": "#ec4899",
+      "size": 5,
+      "depth": "",
+      "url": "https://github.com/callummcdougall/TransformerLens-intro",
+      "quality": 4,
+      "tags": [
+        "interpretability",
+        "exercises",
+        "code"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "blog"
+    },
+    {
+      "id": "res-transformerlens-cheatsheet",
+      "name": "TransformerLens Quick Reference",
+      "type": "resource",
+      "cluster": "mechanistic-interpretability",
+      "color": "#ec4899",
+      "size": 5,
+      "depth": "",
+      "url": "https://www.boristhebrave.com/2025/03/29/transformerlens-quick-reference/",
+      "quality": 3,
+      "tags": [
+        "interpretability",
+        "reference",
+        "cheatsheet"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "blog"
+    },
+    {
+      "id": "res-complete-hardware-guide",
+      "name": "Complete Guide to Running LLMs Locally",
+      "type": "resource",
+      "cluster": "llm-hardware",
+      "color": "#78716c",
+      "size": 5,
+      "depth": "",
+      "url": "https://www.ikangai.com/the-complete-guide-to-running-llms-locally-hardware-software-and-performance-essentials/",
+      "quality": 4,
+      "tags": [
+        "hardware",
+        "local",
+        "deployment"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "blog"
+    },
+    {
+      "id": "res-local-llm-hardware-reddit",
+      "name": "Best Hardware for Local LLMs (Reddit)",
+      "type": "resource",
+      "cluster": "llm-hardware",
+      "color": "#78716c",
+      "size": 5,
+      "depth": "",
+      "url": "https://www.reddit.com/r/LocalLLaMA/comments/1it9vkz/best_hardware_for_local_llms/",
+      "quality": 3,
+      "tags": [
+        "hardware",
+        "community",
+        "gpu"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "blog"
+    },
+    {
+      "id": "res-local-llm-pricing-guide",
+      "name": "Local LLM Hardware Pricing Guide 2025",
+      "type": "resource",
+      "cluster": "llm-hardware",
+      "color": "#78716c",
+      "size": 5,
+      "depth": "",
+      "url": "https://introl.com/blog/local-llm-hardware-pricing-guide-2025",
+      "quality": 4,
+      "tags": [
+        "hardware",
+        "pricing",
+        "gpu"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "blog"
+    },
+    {
+      "id": "res-efficient-transformer-training",
+      "name": "Optimization Techniques for Efficient Transformer Training",
+      "type": "resource",
+      "cluster": "scaling-and-training",
+      "color": "#f59e0b",
+      "size": 5,
+      "depth": "",
+      "url": "https://medium.com/@shuv.sdr/genai-concept-optimization-techniques-for-efficient-transformer-training-3f038a193400",
+      "quality": 3,
+      "tags": [
+        "optimization",
+        "training",
+        "efficiency"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "blog"
+    },
+    {
+      "id": "res-aussie-ai-optimization",
+      "name": "Transformer Optimization (Aussie AI)",
+      "type": "resource",
+      "cluster": "inference-optimization",
+      "color": "#06b6d4",
+      "size": 5,
+      "depth": "",
+      "url": "https://www.aussieai.com/research/transformer-optimization",
+      "quality": 4,
+      "tags": [
+        "optimization",
+        "hardware",
+        "low-level"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "blog"
+    },
+    {
+      "id": "res-ms-realtime-optimization",
+      "name": "Microsoft: Optimize Transformers for Real-Time AI",
+      "type": "resource",
+      "cluster": "inference-optimization",
+      "color": "#06b6d4",
+      "size": 5,
+      "depth": "",
+      "url": "https://learn.microsoft.com/en-us/answers/questions/2243652/how-to-optimize-transformer-models-for-real-time-a",
+      "quality": 3,
+      "tags": [
+        "optimization",
+        "deployment",
+        "azure"
+      ],
+      "questions": [],
+      "body": "",
+      "resource_type": "blog"
+    },
+    {
+      "id": "note-reading-order-intro",
+      "name": "AI That Matters \u2014 curated reading order",
+      "type": "note",
+      "cluster": "transformer-foundations",
+      "color": "#6366f1",
+      "size": 4,
+      "depth": "",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "reading-list",
+        "curriculum"
+      ],
+      "questions": [],
+      "body": "Implement these 26 papers and you have captured ~90% of the alpha behind modern LLMs. The list bridges Transformer foundations with reasoning, MoE, and the agentic shift.",
+      "resource_type": ""
+    },
+    {
+      "id": "note-open-vs-proprietary",
+      "name": "Open-source efficiency vs Anthropic conceptual control",
+      "type": "note",
+      "cluster": "mechanistic-interpretability",
+      "color": "#ec4899",
+      "size": 4,
+      "depth": "",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "insight",
+        "open-source",
+        "anthropic",
+        "comparison"
+      ],
+      "questions": [],
+      "body": "Open-source is winning on structural efficiency (more smarts from less compute via MLA/MTP), while Anthropic is winning on conceptual control (internal feature mapping ensures complex multi-step agentic trajectories without veering off-track). Compare DeepSeek-V3 vs Anthropic Mapping the Mind.",
+      "resource_type": ""
+    },
+    {
+      "id": "note-inference-gap",
+      "name": "Inference is the underserved skill",
+      "type": "note",
+      "cluster": "inference-optimization",
+      "color": "#06b6d4",
+      "size": 4,
+      "depth": "",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "gap",
+        "inference",
+        "production",
+        "learning"
+      ],
+      "questions": [],
+      "body": "Many courses teach AI & LLMs but very few touch on inference. Efficient inference is one of the largest barriers to LLMs in production. Batching, memory management, concurrent sessions, GPU saturation, sharding, MIG, and parallelization are key concepts. There is no clear step-by-step guide on AI perf engineering \u2014 best bet is to study core model pieces and the hardware they run on.",
+      "resource_type": ""
+    },
+    {
+      "id": "note-chinchilla-insight",
+      "name": "Read Scaling Laws alongside Chinchilla",
+      "type": "note",
+      "cluster": "scaling-and-training",
+      "color": "#f59e0b",
+      "size": 4,
+      "depth": "",
+      "url": "",
+      "quality": 0,
+      "tags": [
+        "scaling",
+        "insight",
+        "curriculum"
+      ],
+      "questions": [],
+      "body": "Read Scaling Laws (Kaplan 2020) alongside Chinchilla (Hoffmann 2022) to understand why most models were undertrained on tokens. Token count matters more than parameter count for a fixed compute budget.",
+      "resource_type": ""
+    }
+  ],
+  "links": [
+    {
+      "source": "multi-head-attention",
+      "target": "self-attention",
+      "relationship": "extends",
+      "weight": 0.9,
+      "context": "MHA runs multiple self-attention heads in parallel"
+    },
+    {
+      "source": "transformer-architecture",
+      "target": "multi-head-attention",
+      "relationship": "contains",
+      "weight": 0.9,
+      "context": "MHA is a core component of the Transformer"
+    },
+    {
+      "source": "transformer-architecture",
+      "target": "positional-encoding",
+      "relationship": "contains",
+      "weight": 0.8,
+      "context": "Transformers need positional encoding for sequence order"
+    },
+    {
+      "source": "rotary-position-embedding",
+      "target": "positional-encoding",
+      "relationship": "specializes",
+      "weight": 0.9,
+      "context": "RoPE is a specific positional encoding method"
+    },
+    {
+      "source": "masked-language-modeling",
+      "target": "transformer-architecture",
+      "relationship": "depends_on",
+      "weight": 0.7,
+      "context": "MLM uses the encoder side of the Transformer"
+    },
+    {
+      "source": "in-context-learning",
+      "target": "scaling-laws",
+      "relationship": "depends_on",
+      "weight": 0.7,
+      "context": "ICL emerges at scale predicted by scaling laws"
+    },
+    {
+      "source": "compute-optimal-training",
+      "target": "scaling-laws",
+      "relationship": "extends",
+      "weight": 0.9,
+      "context": "Chinchilla refines scaling laws with optimal token/param ratio"
+    },
+    {
+      "source": "flash-attention",
+      "target": "self-attention",
+      "relationship": "extends",
+      "weight": 0.9,
+      "context": "FlashAttention is an IO-aware implementation of exact attention"
+    },
+    {
+      "source": "flash-attention",
+      "target": "gpu-memory-management",
+      "relationship": "related_to",
+      "weight": 0.8,
+      "context": "FlashAttention optimizes GPU memory access patterns"
+    },
+    {
+      "source": "instruction-tuning",
+      "target": "rlhf",
+      "relationship": "enables",
+      "weight": 0.8,
+      "context": "SFT is the first step before RLHF in the alignment pipeline"
+    },
+    {
+      "source": "direct-preference-optimization",
+      "target": "rlhf",
+      "relationship": "contrasts_with",
+      "weight": 0.8,
+      "context": "DPO eliminates the reward model needed by RLHF/PPO"
+    },
+    {
+      "source": "constitutional-ai",
+      "target": "rlhf",
+      "relationship": "extends",
+      "weight": 0.7,
+      "context": "CAI uses AI feedback instead of human feedback for alignment"
+    },
+    {
+      "source": "chain-of-thought",
+      "target": "in-context-learning",
+      "relationship": "extends",
+      "weight": 0.7,
+      "context": "CoT is a specific prompting strategy within ICL"
+    },
+    {
+      "source": "react-framework",
+      "target": "chain-of-thought",
+      "relationship": "extends",
+      "weight": 0.8,
+      "context": "ReAct interleaves reasoning traces with actions"
+    },
+    {
+      "source": "rl-for-reasoning",
+      "target": "rlhf",
+      "relationship": "extends",
+      "weight": 0.7,
+      "context": "RL for reasoning applies RL to improve reasoning without SFT"
+    },
+    {
+      "source": "rl-for-reasoning",
+      "target": "chain-of-thought",
+      "relationship": "extends",
+      "weight": 0.7,
+      "context": "RL training induces structured CoT-like reasoning"
+    },
+    {
+      "source": "mixture-of-experts",
+      "target": "transformer-architecture",
+      "relationship": "extends",
+      "weight": 0.8,
+      "context": "MoE replaces dense FFN with sparse expert layers"
+    },
+    {
+      "source": "sparse-upcycling",
+      "target": "mixture-of-experts",
+      "relationship": "enables",
+      "weight": 0.8,
+      "context": "Upcycling converts dense models into MoE efficiently"
+    },
+    {
+      "source": "multi-latent-attention",
+      "target": "multi-head-attention",
+      "relationship": "extends",
+      "weight": 0.8,
+      "context": "MLA compresses KV cache via latent representations"
+    },
+    {
+      "source": "llm-inference",
+      "target": "flash-attention",
+      "relationship": "depends_on",
+      "weight": 0.7,
+      "context": "FlashAttention is key to efficient inference"
+    },
+    {
+      "source": "llm-inference",
+      "target": "batching-strategies",
+      "relationship": "contains",
+      "weight": 0.8,
+      "context": "Batching is a core inference optimization"
+    },
+    {
+      "source": "llm-inference",
+      "target": "model-sharding",
+      "relationship": "contains",
+      "weight": 0.7,
+      "context": "Sharding enables serving large models"
+    },
+    {
+      "source": "llm-inference",
+      "target": "gpu-memory-management",
+      "relationship": "depends_on",
+      "weight": 0.8,
+      "context": "Memory management is critical for inference"
+    },
+    {
+      "source": "model-distillation",
+      "target": "llm-inference",
+      "relationship": "enables",
+      "weight": 0.7,
+      "context": "Distillation creates smaller models for faster inference"
+    },
+    {
+      "source": "sparse-autoencoders",
+      "target": "mechanistic-interpretability",
+      "relationship": "specializes",
+      "weight": 0.9,
+      "context": "SAEs are the primary tool for feature extraction"
+    },
+    {
+      "source": "transformerlens",
+      "target": "mechanistic-interpretability",
+      "relationship": "enables",
+      "weight": 0.8,
+      "context": "TransformerLens is the toolkit for MI research"
+    },
+    {
+      "source": "synthetic-data-training",
+      "target": "compute-optimal-training",
+      "relationship": "related_to",
+      "weight": 0.6,
+      "context": "Data quality can substitute for data quantity"
+    },
+    {
+      "source": "retrieval-augmented-generation",
+      "target": "in-context-learning",
+      "relationship": "extends",
+      "weight": 0.6,
+      "context": "RAG augments the context with retrieved knowledge"
+    },
+    {
+      "source": "platonic-representation",
+      "target": "scaling-laws",
+      "relationship": "related_to",
+      "weight": 0.5,
+      "context": "Convergence increases with model scale"
+    },
+    {
+      "source": "large-scale-training",
+      "target": "model-sharding",
+      "relationship": "related_to",
+      "weight": 0.6,
+      "context": "Both involve distributed computation across accelerators"
+    },
+    {
+      "source": "gradient-accumulation",
+      "target": "large-scale-training",
+      "relationship": "enables",
+      "weight": 0.6,
+      "context": "Enables larger effective batch sizes with limited memory"
+    },
+    {
+      "source": "local-llm-deployment",
+      "target": "gpu-memory-management",
+      "relationship": "depends_on",
+      "weight": 0.7,
+      "context": "Local deployment is constrained by consumer GPU VRAM"
+    },
+    {
+      "source": "local-llm-deployment",
+      "target": "model-distillation",
+      "relationship": "depends_on",
+      "weight": 0.6,
+      "context": "Distilled models are more practical for local deployment"
+    },
+    {
+      "source": "self-attention",
+      "target": "res-attention-is-all-you-need",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "Self-attention introduced in original Transformer paper"
+    },
+    {
+      "source": "multi-head-attention",
+      "target": "res-attention-is-all-you-need",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "MHA defined in original Transformer paper"
+    },
+    {
+      "source": "transformer-architecture",
+      "target": "res-attention-is-all-you-need",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "Transformer architecture introduced here"
+    },
+    {
+      "source": "transformer-architecture",
+      "target": "res-illustrated-transformer",
+      "relationship": "learned_from",
+      "weight": 0.8,
+      "context": "Visual intuition for Transformer internals"
+    },
+    {
+      "source": "transformer-architecture",
+      "target": "res-transformer-step-by-step-math",
+      "relationship": "learned_from",
+      "weight": 0.7,
+      "context": "Matrix math walkthrough"
+    },
+    {
+      "source": "transformer-architecture",
+      "target": "res-transformers-from-scratch",
+      "relationship": "learned_from",
+      "weight": 0.7,
+      "context": "Matrix multiplication flows"
+    },
+    {
+      "source": "transformer-architecture",
+      "target": "res-transformer-explainer",
+      "relationship": "learned_from",
+      "weight": 0.8,
+      "context": "Interactive GPT visualization"
+    },
+    {
+      "source": "masked-language-modeling",
+      "target": "res-bert",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "MLM introduced by BERT"
+    },
+    {
+      "source": "in-context-learning",
+      "target": "res-gpt3",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "ICL established by GPT-3 paper"
+    },
+    {
+      "source": "scaling-laws",
+      "target": "res-scaling-laws",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "Original scaling laws paper"
+    },
+    {
+      "source": "compute-optimal-training",
+      "target": "res-chinchilla",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "Chinchilla paper"
+    },
+    {
+      "source": "rotary-position-embedding",
+      "target": "res-roformer",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "RoPE introduced in RoFormer"
+    },
+    {
+      "source": "flash-attention",
+      "target": "res-flash-attention",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "FlashAttention paper"
+    },
+    {
+      "source": "retrieval-augmented-generation",
+      "target": "res-rag",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "RAG paradigm introduced here"
+    },
+    {
+      "source": "instruction-tuning",
+      "target": "res-instructgpt",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "InstructGPT defines the SFT+RLHF pipeline"
+    },
+    {
+      "source": "rlhf",
+      "target": "res-instructgpt",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "RLHF pipeline detailed in InstructGPT"
+    },
+    {
+      "source": "direct-preference-optimization",
+      "target": "res-dpo",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "DPO paper"
+    },
+    {
+      "source": "chain-of-thought",
+      "target": "res-chain-of-thought",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "CoT prompting paper"
+    },
+    {
+      "source": "react-framework",
+      "target": "res-react",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "ReAct framework paper"
+    },
+    {
+      "source": "rl-for-reasoning",
+      "target": "res-deepseek-r1",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "DeepSeek-R1 paper"
+    },
+    {
+      "source": "mixture-of-experts",
+      "target": "res-sparse-gated-moe",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "Original modern MoE paper"
+    },
+    {
+      "source": "mixture-of-experts",
+      "target": "res-switch-transformers",
+      "relationship": "learned_from",
+      "weight": 0.8,
+      "context": "Switch Transformers simplified MoE"
+    },
+    {
+      "source": "mixture-of-experts",
+      "target": "res-mixtral",
+      "relationship": "learned_from",
+      "weight": 0.7,
+      "context": "Mixtral demonstrated open-weight MoE"
+    },
+    {
+      "source": "sparse-upcycling",
+      "target": "res-sparse-upcycling",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "Sparse upcycling paper"
+    },
+    {
+      "source": "platonic-representation",
+      "target": "res-platonic-representation",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "Platonic representation paper"
+    },
+    {
+      "source": "synthetic-data-training",
+      "target": "res-textbooks-all-you-need",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "Textbooks paper"
+    },
+    {
+      "source": "mechanistic-interpretability",
+      "target": "res-scaling-monosemanticity",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "Scaling monosemanticity paper"
+    },
+    {
+      "source": "sparse-autoencoders",
+      "target": "res-scaling-monosemanticity",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "SAEs applied to Claude 3 Sonnet"
+    },
+    {
+      "source": "large-scale-training",
+      "target": "res-palm",
+      "relationship": "learned_from",
+      "weight": 0.8,
+      "context": "PaLM training orchestration"
+    },
+    {
+      "source": "mixture-of-experts",
+      "target": "res-glam",
+      "relationship": "learned_from",
+      "weight": 0.7,
+      "context": "GLaM MoE scaling economics"
+    },
+    {
+      "source": "constitutional-ai",
+      "target": "res-constitutional-ai",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "Constitutional AI paper"
+    },
+    {
+      "source": "multi-latent-attention",
+      "target": "res-deepseek-v3",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "MLA introduced in DeepSeek-V3"
+    },
+    {
+      "source": "mechanistic-interpretability",
+      "target": "res-mapping-the-mind",
+      "relationship": "learned_from",
+      "weight": 0.8,
+      "context": "Accessible overview of feature extraction"
+    },
+    {
+      "source": "transformerlens",
+      "target": "res-getting-started-mech-interp",
+      "relationship": "learned_from",
+      "weight": 0.8,
+      "context": "Official TransformerLens guide"
+    },
+    {
+      "source": "transformerlens",
+      "target": "res-neel-nanda-guide",
+      "relationship": "learned_from",
+      "weight": 0.9,
+      "context": "Neel Nanda core tutorial"
+    },
+    {
+      "source": "transformerlens",
+      "target": "res-transformerlens-intro",
+      "relationship": "learned_from",
+      "weight": 0.7,
+      "context": "Hands-on exercises"
+    },
+    {
+      "source": "llm-inference",
+      "target": "res-cs336-stanford",
+      "relationship": "learned_from",
+      "weight": 0.7,
+      "context": "Stanford inference lectures"
+    },
+    {
+      "source": "llm-inference",
+      "target": "res-understanding-llm-inference",
+      "relationship": "learned_from",
+      "weight": 0.7,
+      "context": "LLM inference article"
+    },
+    {
+      "source": "gpu-memory-management",
+      "target": "res-gpu-perf-engineering",
+      "relationship": "learned_from",
+      "weight": 0.7,
+      "context": "GPU performance engineering"
+    },
+    {
+      "source": "gpu-memory-management",
+      "target": "res-inside-nvidia-gpus",
+      "relationship": "learned_from",
+      "weight": 0.7,
+      "context": "NVIDIA GPU architecture deep dive"
+    },
+    {
+      "source": "local-llm-deployment",
+      "target": "res-complete-hardware-guide",
+      "relationship": "learned_from",
+      "weight": 0.8,
+      "context": "Complete hardware guide"
+    },
+    {
+      "source": "local-llm-deployment",
+      "target": "res-local-llm-pricing-guide",
+      "relationship": "learned_from",
+      "weight": 0.7,
+      "context": "Hardware pricing guide"
+    },
+    {
+      "source": "gradient-accumulation",
+      "target": "res-efficient-transformer-training",
+      "relationship": "learned_from",
+      "weight": 0.7,
+      "context": "Training optimization techniques"
+    },
+    {
+      "source": "model-distillation",
+      "target": "res-ms-realtime-optimization",
+      "relationship": "learned_from",
+      "weight": 0.5,
+      "context": "Microsoft optimization Q&A"
+    }
+  ]
+};
+const clusterData = [
+  {
+    "id": "alignment-and-post-training",
+    "name": "Alignment & Post-Training",
+    "total": 8,
+    "concepts": 4,
+    "resources": 4,
+    "color": "#ef4444"
+  },
+  {
+    "id": "inference-optimization",
+    "name": "Inference Optimization",
+    "total": 21,
+    "concepts": 7,
+    "resources": 12,
+    "color": "#06b6d4"
+  },
+  {
+    "id": "llm-hardware",
+    "name": "LLM Hardware & Deployment",
+    "total": 9,
+    "concepts": 2,
+    "resources": 7,
+    "color": "#78716c"
+  },
+  {
+    "id": "mechanistic-interpretability",
+    "name": "Mechanistic Interpretability",
+    "total": 10,
+    "concepts": 3,
+    "resources": 6,
+    "color": "#ec4899"
+  },
+  {
+    "id": "mixture-of-experts",
+    "name": "Mixture of Experts",
+    "total": 11,
+    "concepts": 2,
+    "resources": 9,
+    "color": "#8b5cf6"
+  },
+  {
+    "id": "reasoning-and-agents",
+    "name": "Reasoning & Agentic Systems",
+    "total": 9,
+    "concepts": 4,
+    "resources": 5,
+    "color": "#10b981"
+  },
+  {
+    "id": "representation-and-data",
+    "name": "Representation & Data Quality",
+    "total": 6,
+    "concepts": 3,
+    "resources": 3,
+    "color": "#84cc16"
+  },
+  {
+    "id": "scaling-and-training",
+    "name": "Scaling & Training",
+    "total": 17,
+    "concepts": 5,
+    "resources": 11,
+    "color": "#f59e0b"
+  },
+  {
+    "id": "transformer-foundations",
+    "name": "Transformer Foundations",
+    "total": 20,
+    "concepts": 8,
+    "resources": 11,
+    "color": "#6366f1"
+  }
+];
+
+// Stats
+document.getElementById('stat-concepts').textContent = graphData.nodes.filter(n => n.type === 'concept').length;
+document.getElementById('stat-resources').textContent = graphData.nodes.filter(n => n.type === 'resource').length;
+document.getElementById('stat-edges').textContent = graphData.links.length;
+document.getElementById('stat-clusters').textContent = clusterData.length;
+
+// Cluster list
+const clusterList = document.getElementById('cluster-list');
+clusterData.sort((a, b) => b.total - a.total).forEach(c => {
+  const div = document.createElement('div');
+  div.className = 'cluster-item';
+  div.dataset.cluster = c.id;
+  div.innerHTML = `<div class="cluster-dot" style="background:${c.color}"></div><span class="cluster-name">${c.name}</span><span class="cluster-count">${c.total}</span>`;
+  div.onclick = () => filterByCluster(c.id);
+  clusterList.appendChild(div);
+});
+
+// D3 Graph
+const svg = d3.select('#graph');
+const width = document.getElementById('graph-area').clientWidth;
+const height = document.getElementById('graph-area').clientHeight;
+
+const simulation = d3.forceSimulation(graphData.nodes)
+  .force('link', d3.forceLink(graphData.links).id(d => d.id).distance(d => {
+    if (d.relationship === 'learned_from') return 60;
+    return 100;
+  }).strength(d => d.weight * 0.3))
+  .force('charge', d3.forceManyBody().strength(-120))
+  .force('center', d3.forceCenter(width / 2, height / 2))
+  .force('collision', d3.forceCollide().radius(d => d.size + 3));
+
+const g = svg.append('g');
+
+// Zoom
+svg.call(d3.zoom()
+  .scaleExtent([0.2, 5])
+  .on('zoom', (event) => g.attr('transform', event.transform)));
+
+// Relationship colors
+const relColors = {
+  'learned_from': '#475569',
+  'extends': '#f59e0b',
+  'depends_on': '#ef4444',
+  'enables': '#10b981',
+  'contains': '#6366f1',
+  'specializes': '#8b5cf6',
+  'related_to': '#64748b',
+  'contrasts_with': '#f97316',
+  'similar_to': '#06b6d4',
+};
+
+const link = g.append('g')
+  .selectAll('line')
+  .data(graphData.links)
+  .join('line')
+  .attr('class', 'link')
+  .attr('stroke', d => relColors[d.relationship] || '#475569')
+  .attr('stroke-width', d => Math.max(1, d.weight * 2.5));
+
+const node = g.append('g')
+  .selectAll('g')
+  .data(graphData.nodes)
+  .join('g')
+  .attr('class', 'node')
+  .call(d3.drag()
+    .on('start', dragstarted)
+    .on('drag', dragged)
+    .on('end', dragended))
+  .on('click', (event, d) => showDetail(d))
+  .on('mouseover', (event, d) => highlightConnected(d))
+  .on('mouseout', () => resetHighlight());
+
+node.append('circle')
+  .attr('r', d => d.size)
+  .attr('fill', d => d.color);
+
+node.append('text')
+  .attr('dx', d => d.size + 4)
+  .attr('dy', 3)
+  .text(d => d.type === 'concept' ? d.name : (d.name.length > 25 ? d.name.slice(0, 25) + '...' : d.name));
+
+simulation.on('tick', () => {
+  link.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+      .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+  node.attr('transform', d => `translate(${d.x},${d.y})`);
+});
+
+function dragstarted(event) { if (!event.active) simulation.alphaTarget(0.3).restart(); event.subject.fx = event.subject.x; event.subject.fy = event.subject.y; }
+function dragged(event) { event.subject.fx = event.x; event.subject.fy = event.y; }
+function dragended(event) { if (!event.active) simulation.alphaTarget(0); event.subject.fx = null; event.subject.fy = null; }
+
+// Highlight
+function highlightConnected(d) {
+  const connected = new Set();
+  connected.add(d.id);
+  graphData.links.forEach(l => {
+    const sid = typeof l.source === 'object' ? l.source.id : l.source;
+    const tid = typeof l.target === 'object' ? l.target.id : l.target;
+    if (sid === d.id) connected.add(tid);
+    if (tid === d.id) connected.add(sid);
+  });
+  node.classed('dimmed', n => !connected.has(n.id));
+  node.classed('highlighted', n => n.id === d.id);
+  link.classed('dimmed', l => {
+    const sid = typeof l.source === 'object' ? l.source.id : l.source;
+    const tid = typeof l.target === 'object' ? l.target.id : l.target;
+    return !connected.has(sid) || !connected.has(tid);
+  });
+}
+
+function resetHighlight() {
+  node.classed('dimmed', false).classed('highlighted', false);
+  link.classed('dimmed', false);
+}
+
+// Detail panel
+function showDetail(d) {
+  const panel = document.getElementById('detail');
+  const content = document.getElementById('detail-content');
+
+  const badgeClass = `badge-${d.type}`;
+  let html = `<h2>${d.name}</h2>`;
+  html += `<div class="meta"><span class="badge ${badgeClass}">${d.type}</span>`;
+  if (d.depth) html += `<span class="badge ${badgeClass}">${d.depth}</span>`;
+  if (d.resource_type) html += `<span class="badge ${badgeClass}">${d.resource_type}</span>`;
+  if (d.quality) html += ` ${' ⭐'.repeat(d.quality)}`;
+  html += `</div>`;
+
+  if (d.url) html += `<a class="url-link" href="${d.url}" target="_blank">🔗 ${d.url}</a>`;
+  if (d.body) html += `<div class="section"><p style="font-size:13px;color:#cbd5e1">${d.body}</p></div>`;
+
+  if (d.questions && d.questions.length) {
+    html += `<div class="section"><h3>Key Questions</h3>`;
+    d.questions.forEach(q => html += `<div class="question">❓ ${q}</div>`);
+    html += `</div>`;
+  }
+
+  // Edges
+  const outEdges = graphData.links.filter(l => (typeof l.source === 'object' ? l.source.id : l.source) === d.id);
+  const inEdges = graphData.links.filter(l => (typeof l.target === 'object' ? l.target.id : l.target) === d.id);
+
+  if (outEdges.length || inEdges.length) {
+    html += `<div class="section"><h3>Connections</h3>`;
+    outEdges.forEach(e => {
+      const targetName = (typeof e.target === 'object' ? e.target.name : e.target);
+      html += `<div class="edge-item"><span class="edge-rel">${e.relationship}</span> → ${targetName}</div>`;
+    });
+    inEdges.forEach(e => {
+      const sourceName = (typeof e.source === 'object' ? e.source.name : e.source);
+      html += `<div class="edge-item">${sourceName} → <span class="edge-rel">${e.relationship}</span></div>`;
+    });
+    html += `</div>`;
+  }
+
+  if (d.tags && d.tags.length) {
+    html += `<div class="section"><h3>Tags</h3><p style="font-size:12px;color:#94a3b8">${d.tags.join(', ')}</p></div>`;
+  }
+
+  content.innerHTML = html;
+  panel.style.display = 'block';
+}
+
+function closeDetail() { document.getElementById('detail').style.display = 'none'; }
+
+// Search
+document.getElementById('search').addEventListener('input', function() {
+  const q = this.value.toLowerCase();
+  if (!q) { resetHighlight(); return; }
+  const matches = new Set();
+  graphData.nodes.forEach(n => {
+    if (n.name.toLowerCase().includes(q) || n.tags.some(t => t.includes(q))) matches.add(n.id);
+  });
+  node.classed('dimmed', n => !matches.has(n.id));
+  link.classed('dimmed', () => true);
+});
+
+// Type filter
+document.querySelectorAll('.type-btn').forEach(btn => {
+  btn.addEventListener('click', function() {
+    document.querySelectorAll('.type-btn').forEach(b => b.classList.remove('active'));
+    this.classList.add('active');
+    const type = this.dataset.type;
+    if (type === 'all') { node.classed('dimmed', false); link.classed('dimmed', false); return; }
+    node.classed('dimmed', n => n.type !== type);
+    link.classed('dimmed', () => true);
+  });
+});
+
+// Cluster filter
+let activeCluster = null;
+function filterByCluster(cid) {
+  document.querySelectorAll('.cluster-item').forEach(el => el.classList.remove('active'));
+  if (activeCluster === cid) { activeCluster = null; resetHighlight(); return; }
+  activeCluster = cid;
+  document.querySelector(`.cluster-item[data-cluster="${cid}"]`).classList.add('active');
+  const inCluster = new Set();
+  graphData.nodes.forEach(n => {
+    if (n.cluster === cid) inCluster.add(n.id);
+  });
+  node.classed('dimmed', n => !inCluster.has(n.id));
+  link.classed('dimmed', l => {
+    const sid = typeof l.source === 'object' ? l.source.id : l.source;
+    const tid = typeof l.target === 'object' ? l.target.id : l.target;
+    return !inCluster.has(sid) || !inCluster.has(tid);
+  });
+}
+
+// Click outside to deselect
+svg.on('click', function(event) {
+  if (event.target.tagName === 'svg') { closeDetail(); resetHighlight(); }
+});
+</script>
+</body>
+</html>

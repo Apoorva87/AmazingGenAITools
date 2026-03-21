@@ -70,6 +70,28 @@ For each successfully fetched URL, keep:
 
 Do NOT block on fetch failures. Log them and move on.
 
+### 2a. Do Targeted Online Research When It Adds Real Value
+
+When the notes mention a paper title, named method, framework, or topic that would benefit from external context, use web search tools to look for a small number of genuinely helpful supporting resources.
+
+Prioritize, in this order:
+
+1. A free, downloadable, complete version of the paper if one is available legally.
+2. High-quality explanatory resources such as strong blog posts, official docs, research project pages, lecture notes, or videos/YouTube talks that explain the idea clearly.
+3. Other reputable references only if they materially improve understanding.
+
+This research is optional, not mandatory. Do it only when you find something meaningfully useful. Do not pad the output with mediocre links.
+
+When evaluating candidate resources:
+
+- Read enough of the source to verify it is actually helpful, accurate, and substantial.
+- Do not rely on titles, snippets, or superficial skimming alone.
+- Prefer resources that explain the core idea, assumptions, tradeoffs, examples, or intuition clearly.
+- Prefer primary sources and technically strong secondary sources over shallow summaries.
+- Keep the set small: a couple of very helpful links is better than many weak ones.
+
+If nothing strong is found, say so briefly and continue without forcing extra links.
+
 ---
 
 ## Step 3: Understand and Extract Concepts
