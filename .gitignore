@@ -1,1 +1,6 @@
 .worktrees/
+.firecrawl/
+.claude/*
+.codex/
+.obsidian/
+.superpowers/

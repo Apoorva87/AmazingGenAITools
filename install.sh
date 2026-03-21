@@ -3,7 +3,7 @@
 # install.sh — Install AmazingGenAITools skills and agents into Claude Code or Codex
 #
 # Skills are symlinked into .claude/skills/ or .codex/skills/
-# Agents are symlinked into .claude/agents/ when installing for Claude Code
+# Agents are symlinked into .claude/agents/ or .codex/agents/ depending on tool
 #
 # Usage:
 #   ./install.sh              Interactive menu
@@ -38,13 +38,15 @@ configure_tool() {
       REPO_TOOL_DIR="$SCRIPT_DIR/.claude"
       HOME_TOOL_DIR="$HOME/.claude"
       SUPPORTS_AGENTS=1
+      AGENT_EXT="md"
       ;;
     codex)
       TOOL="codex"
       TOOL_LABEL="Codex"
       REPO_TOOL_DIR="$SCRIPT_DIR/.codex"
       HOME_TOOL_DIR="$HOME/.codex"
-      SUPPORTS_AGENTS=0
+      SUPPORTS_AGENTS=1
+      AGENT_EXT="toml"
       ;;
     *)
       echo "Unsupported tool: $1 (expected: claude or codex)"
@@ -170,10 +172,10 @@ discover_skills() {
 discover_agents() {
   local agents=()
   if [ -d "$AGENTS_SRC" ]; then
-    for file in "$AGENTS_SRC"/*.md; do
+    for file in "$AGENTS_SRC"/*."$AGENT_EXT"; do
       [ -f "$file" ] || continue
       local name
-      name="$(basename "$file" .md)"
+      name="$(basename "$file" ."$AGENT_EXT")"
       [ "$name" = "README" ] && continue
       agents+=("$name")
     done
@@ -241,8 +243,8 @@ install_agent() {
     return 0
   fi
 
-  local src="$AGENTS_SRC/${name}.md"
-  local dst="$AGENTS_DST/${name}.md"
+  local src="$AGENTS_SRC/${name}.${AGENT_EXT}"
+  local dst="$AGENTS_DST/${name}.${AGENT_EXT}"
 
   if [ ! -f "$src" ]; then
     echo -e "  ${RED}x${RESET} Agent ${BOLD}$name${RESET} not found"
@@ -253,6 +255,11 @@ install_agent() {
   mkdir -p "$AGENTS_DST"
 
   if [ -L "$dst" ] && [ "$(readlink "$dst")" = "$src" ]; then
+    report_existing_install "Agent ${BOLD}$name${RESET}" "$src" "$dst"
+    return 0
+  fi
+
+  if [ -f "$dst" ] && cmp -s "$src" "$dst"; then
     report_existing_install "Agent ${BOLD}$name${RESET}" "$src" "$dst"
     return 0
   fi
@@ -290,13 +297,10 @@ list_components() {
     echo -e "${CYAN}Agents${RESET} (${#agents[@]}):"
     for a in "${agents[@]}"; do
       local status="${DIM}not installed${RESET}"
-      local dst="$AGENTS_DST/${a}.md"
-      [ -L "$dst" ] && status="${GREEN}installed${RESET}"
+      local dst="$AGENTS_DST/${a}.${AGENT_EXT}"
+      [ -e "$dst" ] && status="${GREEN}installed${RESET}"
       echo -e "  $a  ($status)"
     done
-  else
-    echo ""
-    echo -e "${DIM}Agents are skipped for ${TOOL_LABEL}.${RESET}"
   fi
   echo ""
 }
@@ -318,15 +322,16 @@ copy_skill_into_repo() {
 copy_agent_into_repo() {
   local src_file="$1"
   local agent_name="$2"
+  local ext="${src_file##*.}"
 
   mkdir -p "$AGENTS_SRC"
-  if [ -e "$AGENTS_SRC/${agent_name}.md" ]; then
+  if [ -e "$AGENTS_SRC/${agent_name}.${ext}" ]; then
     echo -e "  ${DIM}-${RESET} ${agent_name} already exists in source"
     return
   fi
 
   echo -e "  ${GREEN}+${RESET} Copying ${BOLD}$agent_name${RESET} into source"
-  cp "$src_file" "$AGENTS_SRC/${agent_name}.md"
+  cp "$src_file" "$AGENTS_SRC/${agent_name}.${ext}"
 }
 
 list_contains() {
@@ -361,7 +366,7 @@ register_missing_agent() {
   local path="$2"
   local location="$3"
 
-  if [ -f "$AGENTS_SRC/${name}.md" ]; then
+  if [ -f "$AGENTS_SRC/${name}.md" ] || [ -f "$AGENTS_SRC/${name}.toml" ]; then
     return
   fi
 
@@ -486,6 +491,13 @@ list_installed_components() {
     local base="${location_paths[idx]}"
     local skills_dir="$base/skills"
     local agents_dir="$base/agents"
+    local agent_ext="md"
+
+    case "$base" in
+      */.codex)
+        agent_ext="toml"
+        ;;
+    esac
 
     echo -e "\n${CYAN}${label}${RESET}"
     echo "  Skills ($skills_dir):"
@@ -519,9 +531,9 @@ list_installed_components() {
     for agent_path in "$agents_dir"/*; do
       [ -f "$agent_path" ] || continue
       case "$agent_path" in
-        *.md)
+        *."$agent_ext")
           local agent_name
-          agent_name="$(basename "$agent_path" .md)"
+          agent_name="$(basename "$agent_path" ."$agent_ext")"
           [ "$agent_name" = "README" ] && continue
           echo "    - $agent_name"
           found_agents=true
@@ -593,16 +605,46 @@ interactive_menu() {
   read -ra skills <<< "$(discover_skills)"
   read -ra agents <<< "$(discover_agents)"
 
+  local component_choice=""
+  while true; do
+    echo -e "\n${BOLD}AmazingGenAITools Installer for ${TOOL_LABEL}${RESET}\n"
+    echo "What do you want to install?"
+    echo "  1) Skills"
+    echo "  2) Agents"
+    echo "  3) All"
+    read -rp "Choice [1/2/3, default 3]: " component_choice
+    case "$component_choice" in
+      1|skills)
+        component_choice="skills"
+        break
+        ;;
+      2|agents)
+        component_choice="agents"
+        break
+        ;;
+      ""|3|all)
+        component_choice="all"
+        break
+        ;;
+      *)
+        echo -e "${YELLOW}Please enter 1, 2, or 3.${RESET}"
+        ;;
+    esac
+  done
+
   local all_items=()
   local all_types=()
   local all_names=()
 
-  for s in "${skills[@]}"; do
-    all_items+=("skill:$s")
-    all_types+=("skill")
-    all_names+=("$s")
-  done
-  if [ "$SUPPORTS_AGENTS" -eq 1 ]; then
+  if [ "$component_choice" = "skills" ] || [ "$component_choice" = "all" ]; then
+    for s in "${skills[@]}"; do
+      all_items+=("skill:$s")
+      all_types+=("skill")
+      all_names+=("$s")
+    done
+  fi
+
+  if [ "$component_choice" = "agents" ] || [ "$component_choice" = "all" ]; then
     for a in "${agents[@]}"; do
       all_items+=("agent:$a")
       all_types+=("agent")
@@ -616,23 +658,29 @@ interactive_menu() {
     exit 1
   fi
 
-  echo -e "\n${BOLD}AmazingGenAITools Installer for ${TOOL_LABEL}${RESET}\n"
   echo -e "Select components to install (space-separated numbers, ${BOLD}a${RESET} for all, ${BOLD}q${RESET} to quit):\n"
 
   local i=1
-  echo -e "${CYAN}  Skills:${RESET}"
-  for s in "${skills[@]}"; do
-    local marker=" "
-    [ -L "$SKILLS_DST/$s" ] && marker="${GREEN}*${RESET}"
-    printf "  ${BOLD}%2d${RESET}) %b %-30s\n" "$i" "$marker" "$s"
-    ((i++))
-  done
+  if [ "$component_choice" = "skills" ] || [ "$component_choice" = "all" ]; then
+    echo -e "${CYAN}  Skills:${RESET}"
+    for s in "${skills[@]}"; do
+      local marker=" "
+      [ -L "$SKILLS_DST/$s" ] && marker="${GREEN}*${RESET}"
+      printf "  ${BOLD}%2d${RESET}) %b %-30s\n" "$i" "$marker" "$s"
+      ((i++))
+    done
+  fi
 
-  if [ "$SUPPORTS_AGENTS" -eq 1 ]; then
+  if [ "$component_choice" = "all" ]; then
     echo -e "\n${CYAN}  Agents:${RESET}"
+  elif [ "$component_choice" = "agents" ]; then
+    echo -e "${CYAN}  Agents:${RESET}"
+  fi
+
+  if [ "$component_choice" = "agents" ] || [ "$component_choice" = "all" ]; then
     for a in "${agents[@]}"; do
       local marker=" "
-      [ -L "$AGENTS_DST/${a}.md" ] && marker="${GREEN}*${RESET}"
+      [ -e "$AGENTS_DST/${a}.${AGENT_EXT}" ] && marker="${GREEN}*${RESET}"
       printf "  ${BOLD}%2d${RESET}) %b %-30s\n" "$i" "$marker" "$a"
       ((i++))
     done
@@ -767,7 +815,11 @@ main() {
     configure_tool "$tool_option"
   fi
 
-  set -- "${positionals[@]}"
+  if [ ${#positionals[@]} -gt 0 ]; then
+    set -- "${positionals[@]}"
+  else
+    set --
+  fi
 
   if [ $# -eq 0 ]; then
     interactive_menu
