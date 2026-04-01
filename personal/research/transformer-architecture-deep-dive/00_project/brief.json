@@ -1,0 +1,76 @@
+{
+  "project_title": "Transformer Architecture — A Comprehensive Graduate-Level Deep Dive",
+  "normalized_topic": "transformer-architecture",
+  "domain": "Machine Learning / Deep Learning",
+  "subdomain": "Neural Network Architectures — Sequence Modeling",
+  "classification": {
+    "type": "architecture_study",
+    "theoretical_depth": "graduate",
+    "implementation_depth": "hands_on",
+    "scope": "comprehensive"
+  },
+  "depth_contract": "graduate_note",
+  "description": "A comprehensive, graduate-level deep dive into the Transformer architecture covering the mathematical foundations, architectural design decisions, training dynamics, and modern variants. The study spans from the original 'Attention Is All You Need' paper through current developments like sparse attention, mixture-of-experts, and state-space hybrids. Each sub-topic receives its own dedicated page with three layers: intuition, formalism, and engineering practice.",
+  "format": {
+    "type": "interconnected_html_pages",
+    "style_reference": ["Lilian Weng's blog posts", "Jay Alammar's illustrated guides"],
+    "page_count": 8,
+    "structure": "1 main narrative page + 7 sub-topic deep-dive pages"
+  },
+  "subtopics": [
+    {
+      "id": "self-attention",
+      "title": "Self-Attention Mechanism",
+      "description": "Scaled dot-product attention, multi-head attention, QKV projections, attention patterns, computational complexity, and attention as soft dictionary lookup.",
+      "page_number": 1
+    },
+    {
+      "id": "positional-encoding",
+      "title": "Positional Encoding Deep Dive",
+      "description": "Sinusoidal encodings, learned embeddings, relative position encodings, RoPE, ALiBi, and why position matters in permutation-invariant architectures.",
+      "page_number": 2
+    },
+    {
+      "id": "normalization",
+      "title": "Normalization Techniques",
+      "description": "Layer normalization, Pre-LN vs Post-LN, RMSNorm, batch normalization comparison, and the impact on training stability.",
+      "page_number": 3
+    },
+    {
+      "id": "ffn-activations",
+      "title": "Feed-Forward Networks & Activation Functions",
+      "description": "Position-wise FFN as key-value memories, GELU vs ReLU vs SwiGLU, expansion ratios, and the role of the FFN sub-layer.",
+      "page_number": 4
+    },
+    {
+      "id": "encoder-decoder",
+      "title": "The Encoder-Decoder Architecture",
+      "description": "Full architecture walkthrough, encoder-only vs decoder-only vs encoder-decoder, cross-attention, residual connections, and information flow.",
+      "page_number": 5
+    },
+    {
+      "id": "training",
+      "title": "Training Transformers",
+      "description": "Learning rate schedules (warmup + cosine decay), optimizer choices (Adam, AdamW, LAMB), gradient clipping, mixed precision, label smoothing, and scaling laws.",
+      "page_number": 6
+    },
+    {
+      "id": "modern-variants",
+      "title": "Modern Transformer Variants",
+      "description": "Sparse attention (Longformer, BigBird), linear attention, mixture-of-experts (Switch, GShard), FlashAttention, vision transformers, and state-space model hybrids.",
+      "page_number": 7
+    }
+  ],
+  "key_seed_resources": [
+    "Attention Is All You Need (Vaswani et al., 2017)",
+    "The Annotated Transformer (Harvard NLP)",
+    "Jay Alammar's Illustrated Transformer",
+    "Lilian Weng's The Transformer Family Version 2.0",
+    "RoFormer paper (Su et al., 2021) + Eleuther AI RoPE blog",
+    "On Layer Normalization in the Transformer Architecture (Xiong et al., 2020)",
+    "Efficient Transformers: A Survey (Tay et al., 2020)",
+    "Umar Jamil's YouTube channel",
+    "Andrej Karpathy's Let's build GPT from scratch"
+  ],
+  "created_at": "2026-03-23T00:00:00Z"
+}

@@ -1,0 +1,65 @@
+{
+  "rejected_sources": [
+    {
+      "id": "S052",
+      "title": "r/MachineLearning — Best resources for understanding Transformers",
+      "reason": "Community aggregator, not primary source",
+      "composite_score": 0.70
+    },
+    {
+      "id": "S053",
+      "title": "StackOverflow — Transformer implementation questions",
+      "reason": "Fragmented Q&A, not coherent pedagogical resource",
+      "composite_score": 0.65
+    },
+    {
+      "id": "S055",
+      "title": "PyTorch nn.Transformer documentation",
+      "reason": "API reference only, not pedagogical",
+      "composite_score": 0.72
+    },
+    {
+      "id": "S056",
+      "title": "Yannic Kilcher — Attention Is All You Need review",
+      "reason": "Supplementary; better covered by Karpathy, 3Blue1Brown, Umar Jamil",
+      "composite_score": 0.78
+    },
+    {
+      "id": "S057",
+      "title": "Xavier Initialization and Why It Matters",
+      "reason": "Tangential; mentioned in training notes but not a core resource",
+      "composite_score": 0.68
+    },
+    {
+      "id": "S058",
+      "title": "Jamba: A Hybrid Transformer-Mamba Language Model",
+      "reason": "Too niche for core curriculum; referenced in modern variants notes",
+      "composite_score": 0.83
+    },
+    {
+      "id": "S059",
+      "title": "DeiT: Training data-efficient image transformers",
+      "reason": "ViT training variant; covered adequately by ViT paper (S019)",
+      "composite_score": 0.82
+    },
+    {
+      "id": "S060",
+      "title": "GQA: Training Generalized Multi-Query Attention",
+      "reason": "Important but narrow; referenced in self-attention and modern variants notes",
+      "composite_score": 0.85
+    },
+    {
+      "id": "S061",
+      "title": "How to Train Really Large Models on Many GPUs",
+      "reason": "Distributed training out of scope for architecture study",
+      "composite_score": 0.84
+    },
+    {
+      "id": "S062",
+      "title": "Transformer FFN Layers Are Key-Value Memories",
+      "reason": "Content discussed within FFN source notes; paper referenced",
+      "composite_score": 0.85
+    }
+  ],
+  "generated_at": "2026-03-23T00:02:00Z"
+}

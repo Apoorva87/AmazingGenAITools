@@ -1,0 +1,21 @@
+{
+  "topic": "Transformer Architecture — A Comprehensive Graduate-Level Deep Dive",
+  "depth": "graduate_note",
+  "labs": true,
+  "format": "Interconnected HTML pages (Lilian Weng / Jay Alammar style)",
+  "hypothesis_mode": false,
+  "subtopics": [
+    "Self-Attention Mechanism",
+    "Positional Encoding Deep Dive",
+    "Normalization Techniques",
+    "Feed-Forward Networks & Activation Functions",
+    "The Encoder-Decoder Architecture",
+    "Training Transformers",
+    "Modern Transformer Variants"
+  ],
+  "understand": { "status": "complete", "started_at": "2026-03-23T00:00:00Z", "completed_at": "2026-03-23T00:01:00Z" },
+  "research": { "status": "complete", "started_at": "2026-03-23T00:01:00Z", "completed_at": "2026-03-23T00:02:00Z" },
+  "blueprint": { "status": "complete", "started_at": "2026-03-23T00:02:00Z", "completed_at": "2026-03-23T00:03:00Z" },
+  "created_at": "2026-03-23T00:00:00Z",
+  "last_updated": "2026-03-23T00:03:00Z"
+}

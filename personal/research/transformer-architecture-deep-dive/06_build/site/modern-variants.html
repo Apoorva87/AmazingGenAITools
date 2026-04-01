@@ -1,0 +1,474 @@
+<\!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Modern Transformer Variants — Transformer Deep Dive</title>
+<link rel="stylesheet" href="style.css">
+<script>window.MathJax = {tex: {inlineMath: [['$','$'],['\\(','\\)']]}};</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+</head>
+<body>
+
+<nav class="top-nav">
+  <a href="index.html" class="nav-brand">Transformer Deep Dive</a>
+  <div class="nav-links">
+    <a href="index.html">Home</a>
+    <a href="self-attention.html">Self-Attention</a>
+    <a href="positional-encoding.html">Positional Encoding</a>
+    <a href="normalization.html">Normalization</a>
+    <a href="ffn-activations.html">FFN & Activations</a>
+    <a href="encoder-decoder.html">Encoder-Decoder</a>
+    <a href="training.html">Training</a>
+    <a href="modern-variants.html" class="active">Modern Variants</a>
+  </div>
+  <button class="theme-toggle" aria-label="Toggle theme">🌙</button>
+</nav>
+
+<div class="page-wrapper">
+<aside class="sidebar">
+  <h3>On This Page</h3>
+  <ul>
+    <li><a href="#intuition">7.1 Intuition</a></li>
+    <li><a href="#formalism">7.2 Formalism</a>
+      <ul>
+        <li><a href="#taxonomy">Taxonomy</a></li>
+        <li><a href="#sparse">Sparse Attention</a></li>
+        <li><a href="#linear">Linear Attention</a></li>
+        <li><a href="#flash">FlashAttention</a></li>
+        <li><a href="#moe">Mixture of Experts</a></li>
+        <li><a href="#vit">Vision Transformers</a></li>
+        <li><a href="#ssm">SSM Hybrids</a></li>
+      </ul>
+    </li>
+    <li><a href="#engineering">7.3 Engineering</a></li>
+    <li><a href="#going-deeper">7.4 Going Deeper</a></li>
+  </ul>
+</aside>
+
+<main class="main-content">
+
+<div class="page-header">
+  <div class="breadcrumb"><a href="index.html">Home</a> / Modern Transformer Variants</div>
+  <h1>Modern Transformer Variants</h1>
+  <p class="subtitle">From efficient attention to Mixture of Experts, FlashAttention, Vision Transformers, and state-space model hybrids — how the Transformer has evolved beyond the original architecture.</p>
+</div>
+
+<\!-- ==================== INTUITION ==================== -->
+<h2 id="intuition">7.1 Intuition Layer</h2>
+<div class="layer-indicator"><span class="layer-badge intuition">Intuition</span></div>
+
+<h3>7.1.1 The Quadratic Wall</h3>
+
+<p>Standard self-attention has $O(n^2)$ complexity in sequence length. This creates a harsh scaling wall:</p>
+
+<table>
+  <thead><tr><th>Sequence Length</th><th>Attention Entries</th><th>Memory (FP16)</th></tr></thead>
+  <tbody>
+    <tr><td>512</td><td>262K</td><td>~0.5 MB</td></tr>
+    <tr><td>2,048</td><td>4.2M</td><td>~8 MB</td></tr>
+    <tr><td>8,192</td><td>67M</td><td>~134 MB</td></tr>
+    <tr><td>32,768</td><td>1.07B</td><td>~2 GB</td></tr>
+    <tr><td>131,072</td><td>17.2B</td><td>~34 GB</td></tr>
+  </tbody>
+</table>
+
+<p>For a 32K-token document, just the attention matrix alone needs 2GB per layer per head. Multiply by 32 layers and 32 heads... the math doesn't work.</p>
+
+<h3>7.1.2 Three Strategies</h3>
+
+<div class="callout key-idea">
+  <div class="callout-title">Three Approaches to the Quadratic Problem</div>
+  <div class="callout-body">
+    <ol>
+      <li><strong>Make it sparse</strong>: Only attend to a subset of positions (Longformer, BigBird)</li>
+      <li><strong>Make it linear</strong>: Approximate softmax with kernels to change multiplication order (Performer)</li>
+      <li><strong>Make it fast</strong>: Keep exact attention but optimize hardware utilization (FlashAttention)</li>
+    </ol>
+    Strategy 3 won in practice — FlashAttention is now the standard.
+  </div>
+</div>
+
+<\!-- ==================== FORMALISM ==================== -->
+<h2 id="formalism">7.2 Formalism Layer</h2>
+<div class="layer-indicator"><span class="layer-badge formalism">Formalism</span></div>
+
+<h3 id="taxonomy">7.2.1 Efficient Attention Taxonomy</h3>
+
+<p>Tay et al. (2020) organized efficient attention methods into a taxonomy:</p>
+
+<table>
+  <thead><tr><th>Category</th><th>Methods</th><th>Complexity</th><th>Key Idea</th></tr></thead>
+  <tbody>
+    <tr><td>Fixed Patterns</td><td>Longformer, BigBird</td><td>$O(n \cdot w)$</td><td>Local window + global tokens</td></tr>
+    <tr><td>Learnable Patterns</td><td>Reformer</td><td>$O(n \log n)$</td><td>LSH to find similar tokens</td></tr>
+    <tr><td>Low-Rank</td><td>Linformer</td><td>$O(n \cdot k)$</td><td>Project K,V to lower dimension</td></tr>
+    <tr><td>Kernel</td><td>Performer</td><td>$O(n \cdot d^2)$</td><td>Approximate softmax via random features</td></tr>
+    <tr><td>IO-Aware</td><td>FlashAttention</td><td>$O(n^2)$ (exact\!)</td><td>Optimize memory access patterns</td></tr>
+  </tbody>
+</table>
+
+<h3 id="sparse">7.2.2 Sparse Attention: Longformer and BigBird</h3>
+
+<p><strong>Longformer</strong> (Beltagy et al., 2020) combines two attention patterns:</p>
+<ul>
+  <li><strong>Sliding window</strong>: Each token attends to $w$ neighbors (local context)</li>
+  <li><strong>Global attention</strong>: Special tokens (e.g., [CLS]) attend to all tokens and all tokens attend to them</li>
+</ul>
+
+<p>Complexity: $O(n \cdot w)$ instead of $O(n^2)$. For $w=512$ and $n=4096$, this is 8× fewer operations.</p>
+
+<p><strong>BigBird</strong> adds a third pattern — <strong>random attention</strong>: each token also attends to $r$ random positions. This ensures information can propagate across the full sequence in $O(\log n)$ hops. The combination is provably Turing-complete.</p>
+
+<div class="diagram-container">
+<svg viewBox="0 0 650 180" xmlns="http://www.w3.org/2000/svg" style="max-width:650px;margin:0 auto;display:block;">
+  <\!-- Longformer pattern -->
+  <text x="100" y="20" text-anchor="middle" fill="#2C3E50" font-family="Helvetica Neue,sans-serif" font-size="13" font-weight="700">Longformer</text>
+  <\!-- 8x8 grid showing window + global -->
+  <g transform="translate(30,30)">
+    <\!-- Row labels: global token = row 0 -->
+    <rect x="0" y="0" width="18" height="18" fill="#4A90D9" rx="2"/> <\!-- global attends to all -->
+    <rect x="20" y="0" width="18" height="18" fill="#4A90D9" rx="2"/>
+    <rect x="40" y="0" width="18" height="18" fill="#4A90D9" rx="2"/>
+    <rect x="60" y="0" width="18" height="18" fill="#4A90D9" rx="2"/>
+    <rect x="80" y="0" width="18" height="18" fill="#4A90D9" rx="2"/>
+    <rect x="100" y="0" width="18" height="18" fill="#4A90D9" rx="2"/>
+    <rect x="120" y="0" width="18" height="18" fill="#4A90D9" rx="2"/>
+    <\!-- Row 1: global + window -->
+    <rect x="0" y="20" width="18" height="18" fill="#4A90D9" rx="2"/>
+    <rect x="20" y="20" width="18" height="18" fill="#27AE60" rx="2"/>
+    <rect x="40" y="20" width="18" height="18" fill="#27AE60" rx="2"/>
+    <rect x="60" y="20" width="18" height="18" fill="#ddd" rx="2"/>
+    <rect x="80" y="20" width="18" height="18" fill="#ddd" rx="2"/>
+    <rect x="100" y="20" width="18" height="18" fill="#ddd" rx="2"/>
+    <rect x="120" y="20" width="18" height="18" fill="#ddd" rx="2"/>
+    <\!-- Row 2 -->
+    <rect x="0" y="40" width="18" height="18" fill="#4A90D9" rx="2"/>
+    <rect x="20" y="40" width="18" height="18" fill="#27AE60" rx="2"/>
+    <rect x="40" y="40" width="18" height="18" fill="#27AE60" rx="2"/>
+    <rect x="60" y="40" width="18" height="18" fill="#27AE60" rx="2"/>
+    <rect x="80" y="40" width="18" height="18" fill="#ddd" rx="2"/>
+    <rect x="100" y="40" width="18" height="18" fill="#ddd" rx="2"/>
+    <rect x="120" y="40" width="18" height="18" fill="#ddd" rx="2"/>
+    <\!-- Row 3 -->
+    <rect x="0" y="60" width="18" height="18" fill="#4A90D9" rx="2"/>
+    <rect x="20" y="60" width="18" height="18" fill="#ddd" rx="2"/>
+    <rect x="40" y="60" width="18" height="18" fill="#27AE60" rx="2"/>
+    <rect x="60" y="60" width="18" height="18" fill="#27AE60" rx="2"/>
+    <rect x="80" y="60" width="18" height="18" fill="#27AE60" rx="2"/>
+    <rect x="100" y="60" width="18" height="18" fill="#ddd" rx="2"/>
+    <rect x="120" y="60" width="18" height="18" fill="#ddd" rx="2"/>
+    <\!-- Row 4-6: continue pattern -->
+    <rect x="0" y="80" width="18" height="18" fill="#4A90D9" rx="2"/>
+    <rect x="20" y="80" width="18" height="18" fill="#ddd" rx="2"/>
+    <rect x="40" y="80" width="18" height="18" fill="#ddd" rx="2"/>
+    <rect x="60" y="80" width="18" height="18" fill="#27AE60" rx="2"/>
+    <rect x="80" y="80" width="18" height="18" fill="#27AE60" rx="2"/>
+    <rect x="100" y="80" width="18" height="18" fill="#27AE60" rx="2"/>
+    <rect x="120" y="80" width="18" height="18" fill="#ddd" rx="2"/>
+    <rect x="0" y="100" width="18" height="18" fill="#4A90D9" rx="2"/>
+    <rect x="20" y="100" width="18" height="18" fill="#ddd" rx="2"/>
+    <rect x="40" y="100" width="18" height="18" fill="#ddd" rx="2"/>
+    <rect x="60" y="100" width="18" height="18" fill="#ddd" rx="2"/>
+    <rect x="80" y="100" width="18" height="18" fill="#27AE60" rx="2"/>
+    <rect x="100" y="100" width="18" height="18" fill="#27AE60" rx="2"/>
+    <rect x="120" y="100" width="18" height="18" fill="#27AE60" rx="2"/>
+  </g>
+  <\!-- Legend -->
+  <rect x="30" y="155" width="12" height="12" fill="#4A90D9" rx="2"/>
+  <text x="48" y="166" fill="#666" font-size="10" font-family="Helvetica Neue,sans-serif">Global</text>
+  <rect x="90" y="155" width="12" height="12" fill="#27AE60" rx="2"/>
+  <text x="108" y="166" fill="#666" font-size="10" font-family="Helvetica Neue,sans-serif">Window</text>
+
+  <\!-- Full attention for comparison -->
+  <text x="370" y="20" text-anchor="middle" fill="#2C3E50" font-family="Helvetica Neue,sans-serif" font-size="13" font-weight="700">Full Attention</text>
+  <g transform="translate(300,30)">
+    <rect x="0" y="0" width="140" height="126" rx="4" fill="#C0392B" opacity="0.3"/>
+    <text x="70" y="68" text-anchor="middle" fill="#C0392B" font-size="12" font-weight="600" font-family="Helvetica Neue,sans-serif">O(n²)</text>
+  </g>
+
+  <\!-- BigBird -->
+  <text x="570" y="20" text-anchor="middle" fill="#2C3E50" font-family="Helvetica Neue,sans-serif" font-size="13" font-weight="700">BigBird</text>
+  <g transform="translate(500,30)">
+    <rect x="0" y="0" width="18" height="18" fill="#4A90D9" rx="2"/>
+    <rect x="20" y="0" width="18" height="18" fill="#4A90D9" rx="2"/>
+    <rect x="40" y="0" width="18" height="18" fill="#4A90D9" rx="2"/>
+    <rect x="60" y="0" width="18" height="18" fill="#4A90D9" rx="2"/>
+    <rect x="80" y="0" width="18" height="18" fill="#4A90D9" rx="2"/>
+    <rect x="100" y="0" width="18" height="18" fill="#4A90D9" rx="2"/>
+    <rect x="120" y="0" width="18" height="18" fill="#4A90D9" rx="2"/>
+    <rect x="0" y="20" width="18" height="18" fill="#4A90D9" rx="2"/>
+    <rect x="20" y="20" width="18" height="18" fill="#27AE60" rx="2"/>
+    <rect x="40" y="20" width="18" height="18" fill="#27AE60" rx="2"/>
+    <rect x="60" y="20" width="18" height="18" fill="#ddd" rx="2"/>
+    <rect x="80" y="20" width="18" height="18" fill="#E67E22" rx="2"/>
+    <rect x="100" y="20" width="18" height="18" fill="#ddd" rx="2"/>
+    <rect x="120" y="20" width="18" height="18" fill="#ddd" rx="2"/>
+    <rect x="0" y="40" width="18" height="18" fill="#4A90D9" rx="2"/>
+    <rect x="20" y="40" width="18" height="18" fill="#27AE60" rx="2"/>
+    <rect x="40" y="40" width="18" height="18" fill="#27AE60" rx="2"/>
+    <rect x="60" y="40" width="18" height="18" fill="#27AE60" rx="2"/>
+    <rect x="80" y="40" width="18" height="18" fill="#ddd" rx="2"/>
+    <rect x="100" y="40" width="18" height="18" fill="#E67E22" rx="2"/>
+    <rect x="120" y="40" width="18" height="18" fill="#ddd" rx="2"/>
+  </g>
+  <rect x="500" y="155" width="12" height="12" fill="#E67E22" rx="2"/>
+  <text x="518" y="166" fill="#666" font-size="10" font-family="Helvetica Neue,sans-serif">Random</text>
+</svg>
+<div class="caption">Figure 7.1: Attention patterns. Longformer uses window + global. Full attention fills the entire matrix. BigBird adds random connections.</div>
+</div>
+
+<h3 id="linear">7.2.3 Linear Attention / Performer</h3>
+
+<p>The key insight: the softmax attention can be rewritten using kernels. Standard attention: $\text{softmax}(QK^T)V$. If we replace $\exp(q \cdot k)$ with $\phi(q)^T \phi(k)$ using a feature map $\phi$, we can change the order of operations:</p>
+
+<div class="math-block">
+$$\text{Attn}(Q,K,V) = \text{softmax}(QK^T)V \approx \phi(Q)\left(\phi(K)^T V\right)$$
+</div>
+
+<p>The bracketed expression $\phi(K)^T V$ is $(d \times d)$, computed once, then multiplied by each query: $O(n \cdot d^2)$ total instead of $O(n^2 \cdot d)$. The Performer uses <strong>FAVOR+</strong> random features to approximate the softmax kernel. Elegant but limited adoption — exact attention (FlashAttention) proved more practical.</p>
+
+<h3 id="flash">7.2.4 FlashAttention</h3>
+
+<p>FlashAttention (Dao et al., 2022) is arguably the most impactful engineering contribution to Transformers since the original paper. It computes <strong>exact standard attention</strong> — no approximation — but 2-4× faster and with dramatically less memory.</p>
+
+<div class="callout key-idea">
+  <div class="callout-title">FlashAttention's Core Insight</div>
+  <div class="callout-body">Standard attention is <strong>memory-bound, not compute-bound</strong>. The bottleneck isn't arithmetic — it's reading and writing the $n \times n$ attention matrix to GPU memory (HBM). FlashAttention eliminates this by never materializing the full matrix.</div>
+</div>
+
+<h4>GPU Memory Hierarchy</h4>
+<p>Modern GPUs have two levels of memory:</p>
+<ul>
+  <li><strong>HBM (High Bandwidth Memory)</strong>: 40-80GB, ~2 TB/s bandwidth. This is the main GPU memory.</li>
+  <li><strong>SRAM (on-chip)</strong>: ~20MB per streaming multiprocessor, ~20 TB/s. Tiny but 10× faster.</li>
+</ul>
+
+<p>Standard attention loads Q, K, V from HBM, computes the full $n \times n$ attention matrix, writes it to HBM, then reads it back to multiply by V. FlashAttention tiles the computation into blocks that fit entirely in SRAM.</p>
+
+<div class="diagram-container">
+<svg viewBox="0 0 600 250" xmlns="http://www.w3.org/2000/svg" style="max-width:600px;margin:0 auto;display:block;">
+  <\!-- Standard Attention -->
+  <text x="150" y="20" text-anchor="middle" fill="#C0392B" font-family="Helvetica Neue,sans-serif" font-size="13" font-weight="700">Standard Attention</text>
+  <\!-- HBM -->
+  <rect x="30" y="30" width="240" height="80" rx="8" fill="#FADBD8" stroke="#C0392B" stroke-width="1.5"/>
+  <text x="150" y="50" text-anchor="middle" fill="#C0392B" font-size="12" font-weight="600" font-family="Helvetica Neue,sans-serif">HBM (slow, large)</text>
+  <text x="150" y="70" text-anchor="middle" fill="#666" font-size="11" font-family="Helvetica Neue,sans-serif">Q, K, V, full n×n matrix, output</text>
+  <text x="150" y="90" text-anchor="middle" fill="#666" font-size="11" font-family="Helvetica Neue,sans-serif">Many reads/writes\!</text>
+  <\!-- SRAM -->
+  <rect x="80" y="140" width="140" height="40" rx="6" fill="#E8F5E9" stroke="#27AE60" stroke-width="1.5"/>
+  <text x="150" y="165" text-anchor="middle" fill="#27AE60" font-size="11" font-weight="600" font-family="Helvetica Neue,sans-serif">SRAM (fast, tiny)</text>
+  <\!-- Arrows -->
+  <line x1="120" y1="110" x2="120" y2="138" stroke="#C0392B" stroke-width="2" marker-end="url(#arrowR)"/>
+  <line x1="180" y1="138" x2="180" y2="112" stroke="#C0392B" stroke-width="2" marker-end="url(#arrowR)"/>
+  <text x="150" y="200" text-anchor="middle" fill="#C0392B" font-size="11" font-family="Helvetica Neue,sans-serif">Memory-bound: too many HBM trips</text>
+
+  <\!-- FlashAttention -->
+  <text x="450" y="20" text-anchor="middle" fill="#27AE60" font-family="Helvetica Neue,sans-serif" font-size="13" font-weight="700">FlashAttention</text>
+  <\!-- HBM -->
+  <rect x="330" y="30" width="240" height="80" rx="8" fill="#E8F8EF" stroke="#27AE60" stroke-width="1.5"/>
+  <text x="450" y="50" text-anchor="middle" fill="#27AE60" font-size="12" font-weight="600" font-family="Helvetica Neue,sans-serif">HBM</text>
+  <text x="450" y="70" text-anchor="middle" fill="#666" font-size="11" font-family="Helvetica Neue,sans-serif">Q, K, V, output only</text>
+  <text x="450" y="90" text-anchor="middle" fill="#666" font-size="11" font-family="Helvetica Neue,sans-serif">No n×n matrix stored\!</text>
+  <\!-- SRAM with tiles -->
+  <rect x="360" y="140" width="180" height="40" rx="6" fill="#E8F5E9" stroke="#27AE60" stroke-width="2"/>
+  <text x="450" y="160" text-anchor="middle" fill="#27AE60" font-size="11" font-weight="600" font-family="Helvetica Neue,sans-serif">SRAM: tile-by-tile computation</text>
+  <\!-- Single arrow pair -->
+  <line x1="420" y1="110" x2="420" y2="138" stroke="#27AE60" stroke-width="1.5" marker-end="url(#arrowGn)"/>
+  <line x1="480" y1="138" x2="480" y2="112" stroke="#27AE60" stroke-width="1.5" marker-end="url(#arrowGn)"/>
+  <text x="450" y="200" text-anchor="middle" fill="#27AE60" font-size="11" font-family="Helvetica Neue,sans-serif">Compute-bound: minimal HBM access</text>
+
+  <defs>
+    <marker id="arrowR" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#C0392B"/></marker>
+    <marker id="arrowGn" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#27AE60"/></marker>
+  </defs>
+</svg>
+<div class="caption">Figure 7.2: Standard attention makes many trips to slow HBM. FlashAttention keeps computation in fast SRAM by processing tiles, never materializing the full attention matrix.</div>
+</div>
+
+<h4>The Tiling Algorithm</h4>
+<p>FlashAttention processes the attention in blocks of size $B$:</p>
+<ol>
+  <li>Load a block of Q (size $B \times d$) into SRAM</li>
+  <li>For each block of K, V: compute local attention scores, update running softmax statistics</li>
+  <li>Write final output block back to HBM</li>
+  <li>For backward pass: recompute attention (don't store it) — trading compute for memory</li>
+</ol>
+
+<p>The <strong>online softmax</strong> trick maintains running statistics (max and sum of exponentials) so that the final softmax is exact despite being computed incrementally over blocks.</p>
+
+<h3 id="moe">7.2.5 Mixture of Experts (MoE)</h3>
+
+<p>MoE replaces the single <a href="ffn-activations.html" class="cross-link ffn">FFN →</a> with $N$ expert FFNs and a <strong>router</strong> that decides which expert(s) process each token:</p>
+
+<div class="math-block">
+$$y = \sum_{i=1}^{N} g_i(x) \cdot E_i(x) \quad \text{where } g(x) = \text{TopK}(\text{softmax}(W_r \cdot x))$$
+</div>
+
+<p>Key innovation: <strong>conditional computation</strong>. Each token is processed by only $k$ experts (typically $k=1$ or $k=2$), but the model has $N$ total experts worth of parameters. This allows massive models with modest per-token compute.</p>
+
+<table>
+  <thead><tr><th>Model</th><th>Total Params</th><th>Active Params/Token</th><th>Experts</th><th>Top-k</th></tr></thead>
+  <tbody>
+    <tr><td>Switch Transformer</td><td>1.6T</td><td>~100B</td><td>128</td><td>1</td></tr>
+    <tr><td>Mixtral 8×7B</td><td>47B</td><td>~13B</td><td>8</td><td>2</td></tr>
+    <tr><td>DeepSeek-V2</td><td>236B</td><td>~21B</td><td>160</td><td>6</td></tr>
+  </tbody>
+</table>
+
+<p><strong>Load balancing</strong> is critical: without it, the router might send all tokens to a few "popular" experts, wasting the rest. An auxiliary loss penalizes uneven expert utilization.</p>
+
+<h3 id="vit">7.2.6 Vision Transformers (ViT)</h3>
+
+<p>ViT (Dosovitskiy et al., 2020) showed that Transformers can replace CNNs for image classification:</p>
+
+<ol>
+  <li>Split image into fixed-size patches (e.g., 16×16 pixels)</li>
+  <li>Flatten each patch and linearly project to $d_{\text{model}}$</li>
+  <li>Prepend a [CLS] token for classification</li>
+  <li>Add learned position embeddings</li>
+  <li>Process through a standard Transformer encoder</li>
+</ol>
+
+<p>Key result: ViT matches or beats CNNs on ImageNet when trained with enough data (>100M images).</p>
+
+<h3 id="ssm">7.2.7 State-Space Model Hybrids</h3>
+
+<p><strong>Mamba</strong> (Gu & Dao, 2023): a selective state-space model with $O(n)$ complexity. The key innovation is <em>input-dependent selection</em> — the model learns to selectively remember or forget information from the sequence, similar to what LSTM gates do but with linear-time efficiency.</p>
+
+<p><strong>Hybrid architectures</strong> (Jamba, etc.) interleave Transformer attention layers with Mamba layers. The attention layers provide precise recall for tasks that need it, while Mamba layers handle long-range dependencies efficiently. This is an active area of research.</p>
+
+<\!-- ==================== ENGINEERING ==================== -->
+<h2 id="engineering">7.3 Engineering Layer</h2>
+<div class="layer-indicator"><span class="layer-badge engineering">Engineering</span></div>
+
+<h3>7.3.1 Using FlashAttention in PyTorch</h3>
+
+<div class="code-header"><span>Python — FlashAttention via PyTorch</span></div>
+<pre><code class="language-python">import torch
+import torch.nn.functional as F
+
+# PyTorch >= 2.0 automatically uses FlashAttention when available
+Q = torch.randn(2, 8, 1024, 64, device='cuda', dtype=torch.float16)
+K = torch.randn(2, 8, 1024, 64, device='cuda', dtype=torch.float16)
+V = torch.randn(2, 8, 1024, 64, device='cuda', dtype=torch.float16)
+
+# This uses FlashAttention under the hood\!
+output = F.scaled_dot_product_attention(Q, K, V, is_causal=True)
+
+# Verify: same result as manual attention
+with torch.no_grad():
+    mask = torch.triu(torch.ones(1024, 1024, device='cuda') * float('-inf'), diagonal=1)
+    scores = torch.matmul(Q.float(), K.float().transpose(-2, -1)) / (64 ** 0.5)
+    scores = scores + mask
+    manual = torch.matmul(F.softmax(scores, dim=-1), V.float())
+    print(f"Max diff: {(output.float() - manual).abs().max():.6f}")  # ~0.001 (FP16 precision)</code></pre>
+
+<h3>7.3.2 Simple Sliding-Window Attention</h3>
+
+<div class="code-header"><span>Python — Sliding window attention</span></div>
+<pre><code class="language-python">def sliding_window_attention(Q, K, V, window_size):
+    """Simple sliding window attention: each token attends to `window_size` neighbors."""
+    B, H, T, D = Q.shape
+    
+    # Create window mask
+    mask = torch.zeros(T, T, device=Q.device, dtype=torch.bool)
+    for i in range(T):
+        start = max(0, i - window_size // 2)
+        end = min(T, i + window_size // 2 + 1)
+        mask[i, start:end] = True
+    
+    scores = torch.matmul(Q, K.transpose(-2, -1)) / (D ** 0.5)
+    scores = scores.masked_fill(~mask, float('-inf'))
+    weights = F.softmax(scores, dim=-1)
+    return torch.matmul(weights, V)</code></pre>
+
+<h3>7.3.3 Simple MoE Router</h3>
+
+<div class="code-header"><span>Python — Top-k MoE routing</span></div>
+<pre><code class="language-python">class MoELayer(nn.Module):
+    def __init__(self, d_model, d_ff, n_experts=8, top_k=2):
+        super().__init__()
+        self.n_experts = n_experts
+        self.top_k = top_k
+        self.router = nn.Linear(d_model, n_experts, bias=False)
+        self.experts = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(d_model, d_ff),
+                nn.SiLU(),
+                nn.Linear(d_ff, d_model),
+            ) for _ in range(n_experts)
+        ])
+    
+    def forward(self, x):
+        B, T, D = x.shape
+        
+        # Route: compute expert scores
+        router_logits = self.router(x)  # (B, T, n_experts)
+        weights, indices = torch.topk(router_logits, self.top_k, dim=-1)
+        weights = F.softmax(weights, dim=-1)  # normalize top-k weights
+        
+        # Dispatch tokens to experts (simplified, not batched)
+        output = torch.zeros_like(x)
+        for i in range(self.top_k):
+            expert_idx = indices[:, :, i]  # (B, T)
+            weight = weights[:, :, i:i+1]  # (B, T, 1)
+            for e in range(self.n_experts):
+                mask = (expert_idx == e)
+                if mask.any():
+                    expert_input = x[mask]
+                    expert_output = self.experts[e](expert_input)
+                    output[mask] += weight[mask] * expert_output
+        
+        # Load balancing loss
+        router_probs = F.softmax(router_logits, dim=-1)
+        avg_probs = router_probs.mean(dim=[0, 1])  # average over batch and sequence
+        load_balance_loss = self.n_experts * (avg_probs * avg_probs).sum()
+        
+        return output, load_balance_loss</code></pre>
+
+<\!-- ==================== GOING DEEPER ==================== -->
+<h2 id="going-deeper">7.4 Going Deeper</h2>
+
+<h3>The Future of Attention</h3>
+<p>Will attention survive? The answer is likely "yes, but not alone." Hybrid architectures combining attention (for precise, random-access memory) with linear-time mechanisms (for efficient long-range dependencies) seem to be the emerging consensus.</p>
+
+<h3>Context Length Frontier</h3>
+<p>Context windows have exploded: from 512 tokens (BERT) to 128K (GPT-4) to 1M+ (Gemini). This is enabled by <a href="positional-encoding.html" class="cross-link pe">RoPE scaling →</a>, FlashAttention, and architectural innovations like ring attention for distributed long-context training.</p>
+
+<div class="video-embed">
+  <iframe src="https://www.youtube.com/embed/2V3Uduw1zwQ" allowfullscreen loading="lazy"></iframe>
+  <div class="video-caption">Umar Jamil — LLaMA explained (covers GQA, RoPE, SwiGLU in modern architecture)</div>
+</div>
+
+<h3>Related Pages</h3>
+<p>
+  <a href="self-attention.html" class="cross-link attention">Self-Attention →</a> The base mechanism all variants modify<br><br>
+  <a href="positional-encoding.html" class="cross-link pe">Positional Encoding →</a> RoPE scaling for long context<br><br>
+  <a href="ffn-activations.html" class="cross-link ffn">FFN & Activations →</a> MoE replaces single FFN with expert ensemble<br><br>
+  <a href="training.html" class="cross-link training">Training →</a> FlashAttention enables larger batch sizes
+</p>
+
+<div class="page-footer">
+  <div class="page-nav">
+    <a href="training.html">← Training</a>
+    <a href="index.html">Back to Home →</a>
+  </div>
+</div>
+
+</main>
+</div>
+
+<script>
+const toggle = document.querySelector('.theme-toggle');
+toggle.addEventListener('click', () => {
+  const current = document.documentElement.getAttribute('data-theme');
+  document.documentElement.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+  toggle.textContent = current === 'dark' ? '🌙' : '☀️';
+});
+</script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</body>
+</html>

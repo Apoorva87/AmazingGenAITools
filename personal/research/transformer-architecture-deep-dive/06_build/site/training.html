@@ -1,0 +1,1129 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Training Transformers | Transformer Architecture Deep Dive</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+  <script>
+    MathJax = {
+      tex: { inlineMath: [['\\(','\\)']], displayMath: [['\\[','\\]']], tags: 'ams' },
+      options: { skipHtmlTags: ['script','noscript','style','textarea','pre','code'] }
+    };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" async></script>
+</head>
+<body>
+
+<!-- ============================================================
+     TOP NAVIGATION BAR
+     ============================================================ -->
+<nav class="top-nav">
+  <a href="index.html" class="nav-brand">Transformer Deep Dive</a>
+  <div class="nav-links">
+    <a href="attention.html">Attention</a>
+    <a href="embeddings.html">Embeddings &amp; PE</a>
+    <a href="layer-norm.html">Layer Norm</a>
+    <a href="ffn.html">FFN</a>
+    <a href="encoder-decoder.html">Encoder-Decoder</a>
+    <a href="training.html" class="active">Training</a>
+    <a href="modern-variants.html">Modern Variants</a>
+  </div>
+  <button class="theme-toggle" aria-label="Toggle dark/light theme">&#x1F319;</button>
+</nav>
+
+<!-- ============================================================
+     PAGE LAYOUT
+     ============================================================ -->
+<div class="page-wrapper">
+
+  <!-- Sidebar TOC -->
+  <aside class="sidebar">
+    <h3>On This Page</h3>
+    <ul>
+      <li><a href="#intuition">6.1 Intuition</a></li>
+      <li>
+        <a href="#formalism">6.2 Formalism</a>
+        <ul>
+          <li><a href="#lr-schedules">6.2.1 LR Schedules</a></li>
+          <li><a href="#adam-to-adamw">6.2.2 Adam to AdamW</a></li>
+          <li><a href="#gradient-clipping">6.2.3 Gradient Clipping</a></li>
+          <li><a href="#label-smoothing">6.2.4 Label Smoothing</a></li>
+          <li><a href="#scaling-laws">6.2.5 Scaling Laws</a></li>
+        </ul>
+      </li>
+      <li>
+        <a href="#engineering">6.3 Engineering</a>
+        <ul>
+          <li><a href="#lr-scheduler">6.3.1 LR Scheduler</a></li>
+          <li><a href="#mixed-precision">6.3.2 Mixed Precision</a></li>
+          <li><a href="#grad-accumulation">6.3.3 Grad Accumulation</a></li>
+          <li><a href="#training-loop">6.3.4 Training Loop</a></li>
+          <li><a href="#monitoring">6.3.5 Monitoring</a></li>
+        </ul>
+      </li>
+      <li><a href="#going-deeper">6.4 Going Deeper</a></li>
+      <li><a href="#video">Video</a></li>
+      <li><a href="#cross-links">Cross-Links</a></li>
+    </ul>
+  </aside>
+
+  <!-- Main Content -->
+  <main class="main-content">
+    <div class="page-header animate-in">
+      <div class="breadcrumb">
+        <a href="index.html">Home</a> &rsaquo; Page 6 of 7
+      </div>
+      <h1>Training Transformers</h1>
+      <p class="subtitle">
+        Learning rate schedules, optimizers, scaling laws, and the complete
+        engineering recipe that turns a randomly-initialized model into a
+        powerful language system.
+      </p>
+      <div class="layer-indicator">
+        <span class="layer-badge intuition">Intuition</span>
+        <span class="layer-badge formalism">Formalism</span>
+        <span class="layer-badge engineering">Engineering</span>
+      </div>
+    </div>
+
+    <!-- ============================================================
+         6.1  INTUITION
+         ============================================================ -->
+    <h2 id="intuition">6.1 Intuition &mdash; Why Training Transformers Is Hard</h2>
+
+    <p>
+      Training a Transformer is not like training a modest CNN on CIFAR-10.
+      These models are notoriously sensitive to hyperparameters: change the
+      learning rate by a factor of two and you can go from a record-breaking
+      result to complete divergence. Three ideas capture the essential intuition
+      for why special care is needed.
+    </p>
+
+    <div class="callout insight">
+      <div class="callout-title">&#x1F4A1; The Warmup Principle</div>
+      <div class="callout-body">
+        <p>
+          At initialization, the model's parameters are random. Gradients in
+          the first few steps point in essentially arbitrary directions. If the
+          learning rate is already high, those large, noisy updates can push
+          the model into a region of the loss landscape from which it never
+          recovers. <strong>Warmup</strong> starts the learning rate near zero
+          and linearly ramps it up, giving the optimizer time to estimate
+          reasonable first- and second-moment statistics (in Adam) before
+          taking aggressive steps.
+        </p>
+      </div>
+    </div>
+
+    <p>
+      After the warmup phase, we still need the learning rate to decrease over
+      time. The reasoning is the same as in classical optimization: early in
+      training, large steps help explore the loss landscape; late in training,
+      smaller steps let the model settle into a sharp minimum. The
+      <strong>warmup + decay</strong> recipe &mdash; linear warmup followed by
+      cosine (or inverse-sqrt) decay &mdash; has become the de facto standard.
+    </p>
+
+    <div class="callout historical">
+      <div class="callout-title">&#x1F4DC; The Chinchilla Moment</div>
+      <div class="callout-body">
+        <p>
+          For years, the prevailing strategy was: <em>make the model bigger,
+          train for a fixed budget of tokens, and watch the loss go down.</em>
+          GPT-3 (175 B params) was trained on ~300 B tokens. Then Hoffmann et
+          al. (2022) showed that, for a fixed compute budget, it is far better
+          to <strong>train a smaller model on more data</strong>.
+          Their 70 B &ldquo;Chinchilla&rdquo; model, trained on 1.4 T tokens,
+          outperformed the 280 B Gopher model trained on 300 B tokens.
+          The lesson: we were over-parameterizing and under-training.
+          Meta&rsquo;s LLaMA family followed this insight and became the
+          backbone of the open-source LLM revolution.
+        </p>
+      </div>
+    </div>
+
+    <div class="callout warning">
+      <div class="callout-title">&#x26A0;&#xFE0F; L2 Regularization vs Weight Decay</div>
+      <div class="callout-body">
+        <p>
+          In SGD, L2 regularization and weight decay are mathematically
+          identical. In adaptive optimizers like Adam, they are <strong>not</strong>.
+          This subtle difference went unnoticed for years and led to
+          suboptimal training of many large models &mdash; until Loshchilov
+          &amp; Hutter (2019) introduced AdamW, which decouples weight
+          decay from the adaptive gradient scaling.
+        </p>
+      </div>
+    </div>
+
+
+    <!-- ============================================================
+         6.2  FORMALISM
+         ============================================================ -->
+    <h2 id="formalism">6.2 Formalism</h2>
+
+    <!-- 6.2.1 Learning Rate Schedules -->
+    <h3 id="lr-schedules">6.2.1 Learning Rate Schedules</h3>
+
+    <p>
+      Three schedules dominate modern Transformer training. Each defines
+      \(\eta(t)\) as a function of the training step \(t\).
+    </p>
+
+    <h4>Linear Warmup</h4>
+    <p>
+      During the first \(T_w\) steps, the learning rate increases linearly
+      from 0 to the peak learning rate \(\eta_{\max}\):
+    </p>
+    <div class="math-block">
+      \[
+        \eta(t) = \eta_{\max} \cdot \frac{t}{T_w}, \quad t \le T_w
+      \]
+    </div>
+
+    <h4>Cosine Decay</h4>
+    <p>
+      After warmup, the learning rate follows a smooth cosine anneal from
+      \(\eta_{\max}\) down to a minimum value \(\eta_{\min}\):
+    </p>
+    <div class="math-block">
+      \[
+        \eta(t) = \eta_{\min} + \frac{1}{2}\bigl(\eta_{\max} - \eta_{\min}\bigr)
+        \left(1 + \cos\!\left(\frac{\pi\, t}{T}\right)\right)
+      \]
+    </div>
+    <p>
+      where \(T\) is the total number of training steps (post-warmup).
+    </p>
+
+    <h4>Inverse Square-Root (Original Transformer)</h4>
+    <p>
+      Vaswani et al. (2017) used a schedule that combines warmup with
+      inverse square-root decay in a single formula:
+    </p>
+    <div class="math-block">
+      \[
+        \eta(t) = d_{\text{model}}^{-0.5} \cdot
+        \min\!\bigl(t^{-0.5},\; t \cdot T_w^{-1.5}\bigr)
+      \]
+    </div>
+    <p>
+      This increases linearly for \(t &lt; T_w\) and decays as
+      \(t^{-0.5}\) afterwards, with the peak value automatically
+      determined by the model dimension.
+    </p>
+
+    <!-- SVG: Learning Rate Schedules -->
+    <div class="figure">
+      <div class="diagram-container">
+        <svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Learning rate schedule comparison">
+          <defs>
+            <marker id="arrow-lr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <path d="M0,0 L8,3 L0,6" fill="#666"/>
+            </marker>
+          </defs>
+          <!-- Background -->
+          <rect x="0" y="0" width="700" height="380" fill="none"/>
+          <!-- Axes -->
+          <line x1="70" y1="310" x2="660" y2="310" stroke="#888" stroke-width="1.5" marker-end="url(#arrow-lr)"/>
+          <line x1="70" y1="310" x2="70" y2="30" stroke="#888" stroke-width="1.5" marker-end="url(#arrow-lr)"/>
+          <!-- Axis labels -->
+          <text x="360" y="345" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="13" fill="#666">Training Step (t)</text>
+          <text x="25" y="170" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="13" fill="#666" transform="rotate(-90, 25, 170)">Learning Rate</text>
+          <!-- Grid lines -->
+          <line x1="70" y1="70" x2="650" y2="70" stroke="#ddd" stroke-width="0.5" stroke-dasharray="4,4"/>
+          <line x1="70" y1="130" x2="650" y2="130" stroke="#ddd" stroke-width="0.5" stroke-dasharray="4,4"/>
+          <line x1="70" y1="190" x2="650" y2="190" stroke="#ddd" stroke-width="0.5" stroke-dasharray="4,4"/>
+          <line x1="70" y1="250" x2="650" y2="250" stroke="#ddd" stroke-width="0.5" stroke-dasharray="4,4"/>
+          <!-- Warmup region -->
+          <rect x="70" y="30" width="115" height="280" fill="#FFF3E0" opacity="0.3" rx="4"/>
+          <text x="128" y="325" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="10" fill="#E65100">warmup</text>
+          <!-- Y-axis ticks -->
+          <text x="60" y="74" text-anchor="end" font-family="Helvetica Neue, Arial, sans-serif" font-size="10" fill="#888">&#x3B7;_max</text>
+          <text x="60" y="314" text-anchor="end" font-family="Helvetica Neue, Arial, sans-serif" font-size="10" fill="#888">0</text>
+          <!-- 1) Cosine Decay (warmup + cosine) — blue -->
+          <polyline points="70,310 128,170 185,70 230,78 280,100 330,138 380,185 430,238 480,275 530,295 580,305 630,308 650,310"
+                    fill="none" stroke="#4A90D9" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <!-- 2) Inverse Sqrt (original) — red -->
+          <polyline points="70,310 128,170 185,70 230,88 280,105 330,120 380,133 430,145 480,155 530,164 580,172 630,179 650,182"
+                    fill="none" stroke="#C0392B" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="8,4"/>
+          <!-- 3) Linear warmup + linear decay — green -->
+          <polyline points="70,310 128,170 185,70 230,90 280,112 330,134 380,156 430,178 480,200 530,222 580,244 630,266 650,278"
+                    fill="none" stroke="#27AE60" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="3,5"/>
+          <!-- Legend -->
+          <rect x="430" y="42" width="210" height="76" fill="white" stroke="#ddd" rx="6" opacity="0.92"/>
+          <line x1="440" y1="60" x2="470" y2="60" stroke="#4A90D9" stroke-width="2.5"/>
+          <text x="478" y="64" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#333">Warmup + Cosine Decay</text>
+          <line x1="440" y1="80" x2="470" y2="80" stroke="#C0392B" stroke-width="2.5" stroke-dasharray="8,4"/>
+          <text x="478" y="84" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#333">Inverse Sqrt (Vaswani)</text>
+          <line x1="440" y1="100" x2="470" y2="100" stroke="#27AE60" stroke-width="2.5" stroke-dasharray="3,5"/>
+          <text x="478" y="104" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#333">Warmup + Linear Decay</text>
+        </svg>
+      </div>
+      <div class="caption">Figure 6.1 &mdash; Comparison of three learning rate schedules. All share a linear warmup phase (shaded); they differ in how the rate decays afterwards.</div>
+    </div>
+
+    <!-- 6.2.2 Adam to AdamW -->
+    <h3 id="adam-to-adamw">6.2.2 From Adam to AdamW</h3>
+
+    <p>
+      <strong>Adam</strong> (Kingma &amp; Ba, 2015) maintains exponential
+      moving averages of the first moment (mean) and second moment (uncentered
+      variance) of each parameter&rsquo;s gradient:
+    </p>
+    <div class="math-block">
+      \[
+      \begin{aligned}
+        m_t &= \beta_1 \, m_{t-1} + (1-\beta_1)\, g_t \\[4pt]
+        v_t &= \beta_2 \, v_{t-1} + (1-\beta_2)\, g_t^2
+      \end{aligned}
+      \]
+    </div>
+
+    <p>Bias-corrected estimates:</p>
+    <div class="math-block">
+      \[
+        \hat{m}_t = \frac{m_t}{1-\beta_1^t}, \qquad
+        \hat{v}_t = \frac{v_t}{1-\beta_2^t}
+      \]
+    </div>
+
+    <p>Parameter update:</p>
+    <div class="math-block">
+      \[
+        \theta_{t+1} = \theta_t - \eta \cdot
+        \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon}
+      \]
+    </div>
+
+    <div class="callout key-idea">
+      <div class="callout-title">&#x1F511; Key Insight: L2 Regularization &ne; Weight Decay in Adaptive Optimizers</div>
+      <div class="callout-body">
+        <p>
+          <strong>L2 regularization</strong> adds \(\lambda \theta\) to the
+          gradient <em>before</em> Adam processes it. Because Adam divides by
+          \(\sqrt{\hat{v}_t}\), the regularization strength becomes
+          parameter-dependent &mdash; large-gradient parameters get <em>less</em>
+          regularization, the opposite of what we want.
+        </p>
+        <div class="math-block">
+          \[
+            \text{L2: } \theta_{t+1} = \theta_t - \eta \cdot
+            \frac{\hat{m}_t + \lambda\theta_t}{\sqrt{\hat{v}_t}+\epsilon}
+            \quad \longleftarrow \text{scaled by adaptive LR!}
+          \]
+        </div>
+        <p>
+          <strong>Weight decay (AdamW)</strong> subtracts \(\lambda \theta\)
+          <em>directly</em> from the parameters, bypassing Adam&rsquo;s
+          adaptive scaling entirely:
+        </p>
+        <div class="math-block">
+          \[
+            \text{AdamW: } \theta_{t+1} = (1-\eta\lambda)\,\theta_t - \eta \cdot
+            \frac{\hat{m}_t}{\sqrt{\hat{v}_t}+\epsilon}
+          \]
+        </div>
+        <p>
+          This implements <em>true</em> decoupled weight decay, giving uniform
+          regularization across all parameters regardless of gradient magnitude.
+        </p>
+      </div>
+    </div>
+
+    <!-- SVG: Adam vs AdamW comparison -->
+    <div class="figure">
+      <div class="diagram-container">
+        <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Adam vs AdamW data flow comparison">
+          <!-- Adam path (top) -->
+          <text x="350" y="24" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="14" font-weight="700" fill="#C0392B">Adam + L2 Regularization</text>
+          <rect x="30" y="45" width="100" height="40" rx="6" fill="#EBF3FB" stroke="#4A90D9" stroke-width="1.5"/>
+          <text x="80" y="70" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#333">Gradient g</text>
+          <line x1="130" y1="65" x2="165" y2="65" stroke="#888" stroke-width="1.5" marker-end="url(#arrow-lr)"/>
+          <rect x="170" y="40" width="120" height="50" rx="6" fill="#FADBD8" stroke="#C0392B" stroke-width="1.5"/>
+          <text x="230" y="62" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="10" fill="#333">g + &#x3BB;&#x3B8;</text>
+          <text x="230" y="78" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="9" fill="#888">(L2 added here)</text>
+          <line x1="290" y1="65" x2="325" y2="65" stroke="#888" stroke-width="1.5" marker-end="url(#arrow-lr)"/>
+          <rect x="330" y="45" width="120" height="40" rx="6" fill="#EBF3FB" stroke="#4A90D9" stroke-width="1.5"/>
+          <text x="390" y="70" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#333">Adam m, v</text>
+          <line x1="450" y1="65" x2="485" y2="65" stroke="#888" stroke-width="1.5" marker-end="url(#arrow-lr)"/>
+          <rect x="490" y="40" width="170" height="50" rx="6" fill="#FADBD8" stroke="#C0392B" stroke-width="1.5"/>
+          <text x="575" y="60" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="10" fill="#333">&#x3B8; &minus; &#x3B7;(m&#x0302;+&#x3BB;&#x3B8;)/(&#x221A;v&#x0302;+&#x3B5;)</text>
+          <text x="575" y="78" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="9" fill="#C0392B">&#x3BB;&#x3B8; scaled by 1/&#x221A;v&#x0302; &#x2717;</text>
+
+          <!-- Divider -->
+          <line x1="20" y1="120" x2="680" y2="120" stroke="#ddd" stroke-width="1" stroke-dasharray="6,4"/>
+
+          <!-- AdamW path (bottom) -->
+          <text x="350" y="150" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="14" font-weight="700" fill="#27AE60">AdamW (Decoupled Weight Decay)</text>
+          <rect x="30" y="170" width="100" height="40" rx="6" fill="#EBF3FB" stroke="#4A90D9" stroke-width="1.5"/>
+          <text x="80" y="195" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#333">Gradient g</text>
+          <line x1="130" y1="190" x2="195" y2="190" stroke="#888" stroke-width="1.5" marker-end="url(#arrow-lr)"/>
+          <rect x="200" y="170" width="120" height="40" rx="6" fill="#EBF3FB" stroke="#4A90D9" stroke-width="1.5"/>
+          <text x="260" y="195" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#333">Adam m, v</text>
+          <line x1="320" y1="190" x2="355" y2="190" stroke="#888" stroke-width="1.5" marker-end="url(#arrow-lr)"/>
+          <rect x="360" y="170" width="140" height="40" rx="6" fill="#EBF3FB" stroke="#4A90D9" stroke-width="1.5"/>
+          <text x="430" y="195" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#333">&#x3B8; &minus; &#x3B7;m&#x0302;/&#x221A;v&#x0302;</text>
+          <!-- Separate weight decay path -->
+          <rect x="360" y="230" width="140" height="36" rx="6" fill="#E8F5E9" stroke="#27AE60" stroke-width="1.5"/>
+          <text x="430" y="253" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#2E7D32">&#x3B8; &minus; &#x3B7;&#x3BB;&#x3B8;</text>
+          <line x1="500" y1="190" x2="545" y2="190" stroke="#888" stroke-width="1.5" marker-end="url(#arrow-lr)"/>
+          <line x1="500" y1="248" x2="545" y2="218" stroke="#27AE60" stroke-width="1.5" marker-end="url(#arrow-lr)"/>
+          <rect x="550" y="180" width="120" height="50" rx="6" fill="#E8F5E9" stroke="#27AE60" stroke-width="1.5"/>
+          <text x="610" y="200" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="10" fill="#333">Combined update</text>
+          <text x="610" y="220" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="9" fill="#27AE60">&#x3BB;&#x3B8; NOT scaled &#x2713;</text>
+        </svg>
+      </div>
+      <div class="caption">Figure 6.2 &mdash; Adam + L2 regularization (top) vs. AdamW with decoupled weight decay (bottom). In Adam, the L2 term is scaled by the adaptive learning rate; in AdamW it is applied directly.</div>
+    </div>
+
+    <p>Typical hyperparameters for large Transformer training:</p>
+    <table>
+      <thead>
+        <tr><th>Hyperparameter</th><th>Symbol</th><th>Typical Value</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>First moment decay</td><td>\(\beta_1\)</td><td>0.9</td></tr>
+        <tr><td>Second moment decay</td><td>\(\beta_2\)</td><td>0.95</td></tr>
+        <tr><td>Epsilon</td><td>\(\epsilon\)</td><td>\(10^{-8}\)</td></tr>
+        <tr><td>Weight decay</td><td>\(\lambda\)</td><td>0.1</td></tr>
+        <tr><td>Peak learning rate</td><td>\(\eta_{\max}\)</td><td>\(3 \times 10^{-4}\)</td></tr>
+        <tr><td>Warmup steps</td><td>\(T_w\)</td><td>2000</td></tr>
+      </tbody>
+    </table>
+
+    <!-- 6.2.3 Gradient Clipping -->
+    <h3 id="gradient-clipping">6.2.3 Gradient Clipping</h3>
+
+    <p>
+      Even with warmup and adaptive optimizers, Transformers can experience
+      sudden gradient explosions &mdash; especially during the early stages of
+      training or when processing unusually long sequences. <strong>Global norm
+      clipping</strong> is a simple safeguard: compute the L2 norm of the
+      entire gradient vector, and if it exceeds a threshold, rescale it.
+    </p>
+    <div class="math-block">
+      \[
+        \mathbf{g} \leftarrow
+        \begin{cases}
+          \mathbf{g} \cdot \dfrac{\text{max\_norm}}{\|\mathbf{g}\|_2}
+          & \text{if } \|\mathbf{g}\|_2 > \text{max\_norm} \\[6pt]
+          \mathbf{g} & \text{otherwise}
+        \end{cases}
+      \]
+    </div>
+    <p>
+      where \(\mathbf{g}\) is the concatenation of all parameter gradients
+      and \(\text{max\_norm} = 1.0\) is the most common setting. This
+      preserves the <em>direction</em> of the gradient while bounding its
+      magnitude, preventing catastrophic parameter updates.
+    </p>
+
+    <!-- 6.2.4 Label Smoothing -->
+    <h3 id="label-smoothing">6.2.4 Label Smoothing</h3>
+
+    <p>
+      Standard cross-entropy training uses <em>hard</em> targets: probability
+      1 for the correct token, 0 for everything else. This encourages the
+      model to output increasingly extreme logits, leading to
+      <strong>overconfident predictions</strong> that generalize poorly.
+    </p>
+
+    <p>
+      <strong>Label smoothing</strong> (Szegedy et al., 2016; used in the
+      original Transformer with \(\varepsilon = 0.1\)) replaces hard targets
+      with soft targets:
+    </p>
+    <div class="math-block">
+      \[
+        y_k^{\text{smooth}} =
+        \begin{cases}
+          1 - \varepsilon & \text{if } k = \text{correct class} \\[4pt]
+          \dfrac{\varepsilon}{V - 1} & \text{otherwise}
+        \end{cases}
+      \]
+    </div>
+    <p>
+      where \(V\) is the vocabulary size. This prevents the model from
+      becoming too certain about any single prediction, acting as a form of
+      regularization that improves calibration and, in practice, often
+      improves BLEU scores in translation tasks.
+    </p>
+
+    <!-- 6.2.5 Scaling Laws -->
+    <h3 id="scaling-laws">6.2.5 Scaling Laws</h3>
+
+    <p>
+      One of the most remarkable empirical findings in deep learning is that
+      Transformer loss follows <strong>power-law relationships</strong> with
+      compute, dataset size, and parameter count.
+    </p>
+
+    <h4>Kaplan et al. (2020) &mdash; Neural Scaling Laws</h4>
+    <p>
+      The test loss \(L\) of a language model follows power laws in each of
+      the three scaling variables:
+    </p>
+    <div class="math-block">
+      \[
+      \begin{aligned}
+        L(N) &\propto N^{-0.076}  &\quad &\text{(parameters)} \\[4pt]
+        L(D) &\propto D^{-0.095}  &\quad &\text{(dataset size)} \\[4pt]
+        L(C) &\propto C^{-0.050}  &\quad &\text{(compute)}
+      \end{aligned}
+      \]
+    </div>
+    <p>
+      A key finding: larger models are more <strong>sample-efficient</strong>
+      &mdash; they reach a given loss with fewer training tokens than smaller
+      models. This led to the strategy of training very large models for
+      relatively few steps.
+    </p>
+
+    <h4>Chinchilla (Hoffmann et al. 2022) &mdash; Optimal Compute Allocation</h4>
+    <p>
+      Hoffmann et al. revisited the scaling laws and found that the Kaplan
+      prescriptions over-allocated compute to model size. For a given compute
+      budget \(C\), the optimal allocation scales <em>both</em> model size
+      and data equally:
+    </p>
+    <div class="math-block">
+      \[
+        N_{\text{opt}} \propto C^{0.5}, \qquad
+        D_{\text{opt}} \propto C^{0.5}
+      \]
+    </div>
+    <p>
+      Concretely, the rule of thumb is: for every doubling of parameters,
+      double the training tokens as well. A 70 B model should see roughly
+      1.4 T tokens. Meta&rsquo;s LLaMA (Touvron et al., 2023) embraced
+      this, training 7 B&ndash;65 B parameter models on 1.0&ndash;1.4 T
+      tokens and achieving performance competitive with much larger models.
+    </p>
+
+    <!-- SVG: Scaling Laws Plot -->
+    <div class="figure">
+      <div class="diagram-container">
+        <svg viewBox="0 0 700 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Scaling laws log-log plot with Chinchilla frontier">
+          <defs>
+            <marker id="arrow-sl" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <path d="M0,0 L8,3 L0,6" fill="#666"/>
+            </marker>
+          </defs>
+          <!-- Axes -->
+          <line x1="80" y1="350" x2="660" y2="350" stroke="#888" stroke-width="1.5" marker-end="url(#arrow-sl)"/>
+          <line x1="80" y1="350" x2="80" y2="30" stroke="#888" stroke-width="1.5" marker-end="url(#arrow-sl)"/>
+          <text x="370" y="390" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="13" fill="#666">Compute (FLOPs, log scale)</text>
+          <text x="28" y="190" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="13" fill="#666" transform="rotate(-90, 28, 190)">Test Loss (log scale)</text>
+          <!-- Grid -->
+          <line x1="80" y1="100" x2="650" y2="100" stroke="#eee" stroke-width="0.5" stroke-dasharray="4,4"/>
+          <line x1="80" y1="175" x2="650" y2="175" stroke="#eee" stroke-width="0.5" stroke-dasharray="4,4"/>
+          <line x1="80" y1="250" x2="650" y2="250" stroke="#eee" stroke-width="0.5" stroke-dasharray="4,4"/>
+          <!-- X-axis labels -->
+          <text x="140" y="370" text-anchor="middle" font-family="SF Mono, monospace" font-size="9" fill="#888">10^19</text>
+          <text x="260" y="370" text-anchor="middle" font-family="SF Mono, monospace" font-size="9" fill="#888">10^21</text>
+          <text x="380" y="370" text-anchor="middle" font-family="SF Mono, monospace" font-size="9" fill="#888">10^23</text>
+          <text x="500" y="370" text-anchor="middle" font-family="SF Mono, monospace" font-size="9" fill="#888">10^25</text>
+          <text x="620" y="370" text-anchor="middle" font-family="SF Mono, monospace" font-size="9" fill="#888">10^27</text>
+          <!-- Kaplan scaling line (steeper, over-parameterized) -->
+          <line x1="120" y1="100" x2="620" y2="260" stroke="#C0392B" stroke-width="2" stroke-dasharray="8,4" opacity="0.7"/>
+          <text x="600" y="250" font-family="Helvetica Neue, Arial, sans-serif" font-size="10" fill="#C0392B" text-anchor="end">Kaplan frontier</text>
+          <!-- Chinchilla frontier (lower loss for same compute) -->
+          <line x1="120" y1="120" x2="620" y2="300" stroke="#27AE60" stroke-width="2.5"/>
+          <text x="600" y="315" font-family="Helvetica Neue, Arial, sans-serif" font-size="10" fill="#27AE60" text-anchor="end" font-weight="600">Chinchilla frontier</text>
+          <!-- Model points on Kaplan line -->
+          <circle cx="200" cy="130" r="8" fill="#4A90D9" opacity="0.8"/>
+          <text x="200" y="122" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="9" fill="#333" font-weight="600">GPT-2</text>
+          <circle cx="380" cy="175" r="10" fill="#4A90D9" opacity="0.8"/>
+          <text x="380" y="162" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="9" fill="#333" font-weight="600">GPT-3</text>
+          <circle cx="440" cy="185" r="9" fill="#8E44AD" opacity="0.8"/>
+          <text x="440" y="175" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="9" fill="#333" font-weight="600">Gopher</text>
+          <!-- Chinchilla point (lower loss, same compute as Gopher) -->
+          <circle cx="440" cy="230" r="10" fill="#27AE60" opacity="0.9"/>
+          <text x="460" y="243" font-family="Helvetica Neue, Arial, sans-serif" font-size="9" fill="#2E7D32" font-weight="700">Chinchilla</text>
+          <!-- Arrow showing improvement -->
+          <line x1="440" y1="195" x2="440" y2="222" stroke="#27AE60" stroke-width="1.5" marker-end="url(#arrow-sl)"/>
+          <!-- LLaMA point -->
+          <circle cx="520" cy="260" r="9" fill="#E67E22" opacity="0.9"/>
+          <text x="540" y="258" font-family="Helvetica Neue, Arial, sans-serif" font-size="9" fill="#E67E22" font-weight="600">LLaMA</text>
+          <!-- Legend box -->
+          <rect x="100" y="300" width="200" height="45" fill="white" stroke="#ddd" rx="6" opacity="0.92"/>
+          <circle cx="115" cy="315" r="5" fill="#4A90D9"/>
+          <text x="128" y="319" font-family="Helvetica Neue, Arial, sans-serif" font-size="10" fill="#333">Over-parameterized regime</text>
+          <circle cx="115" cy="335" r="5" fill="#27AE60"/>
+          <text x="128" y="339" font-family="Helvetica Neue, Arial, sans-serif" font-size="10" fill="#333">Compute-optimal regime</text>
+        </svg>
+      </div>
+      <div class="caption">Figure 6.3 &mdash; Scaling laws on a log-log plot. The Chinchilla frontier shows that smaller, longer-trained models achieve lower loss for the same compute. LLaMA followed this insight.</div>
+    </div>
+
+
+    <!-- ============================================================
+         6.3  ENGINEERING
+         ============================================================ -->
+    <h2 id="engineering">6.3 Engineering</h2>
+
+    <!-- 6.3.1 Custom LR Scheduler -->
+    <h3 id="lr-scheduler">6.3.1 Custom Learning Rate Scheduler</h3>
+
+    <p>
+      PyTorch provides <code>torch.optim.lr_scheduler</code>, but for full
+      control over the warmup + cosine decay recipe, a custom scheduler is
+      straightforward:
+    </p>
+
+    <div class="code-header">
+      <span>Python &mdash; lr_scheduler.py</span>
+      <span class="layer-badge engineering">Engineering</span>
+    </div>
+    <pre><code class="language-python">import math
+
+class WarmupCosineScheduler:
+    """Warmup + cosine decay learning rate scheduler."""
+
+    def __init__(self, optimizer, warmup_steps, total_steps,
+                 lr_max=3e-4, lr_min=1e-5):
+        self.optimizer = optimizer
+        self.warmup_steps = warmup_steps
+        self.total_steps = total_steps
+        self.lr_max = lr_max
+        self.lr_min = lr_min
+        self.current_step = 0
+
+    def get_lr(self):
+        if self.current_step < self.warmup_steps:
+            # Linear warmup
+            return self.lr_max * self.current_step / self.warmup_steps
+        # Cosine decay
+        progress = (self.current_step - self.warmup_steps) / \
+                   max(1, self.total_steps - self.warmup_steps)
+        return self.lr_min + 0.5 * (self.lr_max - self.lr_min) * \
+               (1 + math.cos(math.pi * progress))
+
+    def step(self):
+        lr = self.get_lr()
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = lr
+        self.current_step += 1
+        return lr</code></pre>
+
+    <!-- 6.3.2 Mixed Precision -->
+    <h3 id="mixed-precision">6.3.2 Mixed Precision Training</h3>
+
+    <p>
+      Modern GPUs perform FP16/BF16 math 2&ndash;8x faster than FP32.
+      <strong>Mixed precision training</strong> uses lower precision for the
+      forward/backward pass while keeping a master copy of weights in FP32
+      for numerically stable updates.
+    </p>
+
+    <div class="callout insight">
+      <div class="callout-title">&#x1F4A1; BF16 vs FP16</div>
+      <div class="callout-body">
+        <p>
+          <strong>FP16</strong> has 5 exponent bits and 10 mantissa bits &mdash;
+          good precision but limited range (max ~65504). Requires loss scaling
+          to avoid underflow.
+        </p>
+        <p>
+          <strong>BF16</strong> has 8 exponent bits and 7 mantissa bits &mdash;
+          same range as FP32 but lower precision. No loss scaling needed, which
+          makes training simpler and more stable. Preferred for Transformer
+          training on Ampere+ GPUs.
+        </p>
+      </div>
+    </div>
+
+    <!-- SVG: Mixed Precision Data Flow -->
+    <div class="figure">
+      <div class="diagram-container">
+        <svg viewBox="0 0 700 260" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Mixed precision training data flow">
+          <defs>
+            <marker id="arrow-mp" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <path d="M0,0 L8,3 L0,6" fill="#666"/>
+            </marker>
+          </defs>
+          <!-- FP32 Master Weights -->
+          <rect x="30" y="100" width="130" height="50" rx="8" fill="#E3F2FD" stroke="#1565C0" stroke-width="2"/>
+          <text x="95" y="120" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" font-weight="600" fill="#1565C0">FP32 Master</text>
+          <text x="95" y="138" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#333">Weights</text>
+          <!-- Cast to BF16 -->
+          <line x1="160" y1="125" x2="200" y2="125" stroke="#888" stroke-width="1.5" marker-end="url(#arrow-mp)"/>
+          <text x="180" y="118" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="9" fill="#888">cast</text>
+          <!-- BF16 Forward -->
+          <rect x="205" y="80" width="120" height="40" rx="8" fill="#E8F5E9" stroke="#27AE60" stroke-width="2"/>
+          <text x="265" y="105" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#2E7D32">BF16 Forward</text>
+          <!-- BF16 Loss -->
+          <line x1="325" y1="100" x2="355" y2="100" stroke="#888" stroke-width="1.5" marker-end="url(#arrow-mp)"/>
+          <rect x="360" y="80" width="80" height="40" rx="8" fill="#FFF3E0" stroke="#E65100" stroke-width="2"/>
+          <text x="400" y="105" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#E65100">Loss</text>
+          <!-- BF16 Backward -->
+          <line x1="400" y1="120" x2="400" y2="155" stroke="#888" stroke-width="1.5" marker-end="url(#arrow-mp)"/>
+          <rect x="330" y="160" width="140" height="40" rx="8" fill="#E8F5E9" stroke="#27AE60" stroke-width="2"/>
+          <text x="400" y="185" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#2E7D32">BF16 Backward</text>
+          <!-- FP32 Gradients -->
+          <line x1="330" y1="180" x2="260" y2="180" stroke="#888" stroke-width="1.5" marker-end="url(#arrow-mp)"/>
+          <text x="295" y="172" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="9" fill="#888">cast</text>
+          <rect x="130" y="160" width="130" height="40" rx="8" fill="#E3F2FD" stroke="#1565C0" stroke-width="2"/>
+          <text x="195" y="185" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#1565C0">FP32 Update</text>
+          <!-- Arrow back to master weights -->
+          <line x1="95" y1="160" x2="95" y2="150" stroke="#1565C0" stroke-width="1.5" marker-end="url(#arrow-mp)"/>
+          <line x1="130" y1="180" x2="95" y2="180" stroke="#888" stroke-width="1"/>
+          <line x1="95" y1="180" x2="95" y2="165" stroke="#888" stroke-width="1"/>
+          <!-- Labels -->
+          <rect x="500" y="80" width="170" height="85" fill="white" stroke="#ddd" rx="6" opacity="0.92"/>
+          <rect x="510" y="95" width="14" height="14" rx="3" fill="#E8F5E9" stroke="#27AE60"/>
+          <text x="532" y="106" font-family="Helvetica Neue, Arial, sans-serif" font-size="10" fill="#333">BF16 (fast path)</text>
+          <rect x="510" y="118" width="14" height="14" rx="3" fill="#E3F2FD" stroke="#1565C0"/>
+          <text x="532" y="129" font-family="Helvetica Neue, Arial, sans-serif" font-size="10" fill="#333">FP32 (precise path)</text>
+          <rect x="510" y="141" width="14" height="14" rx="3" fill="#FFF3E0" stroke="#E65100"/>
+          <text x="532" y="152" font-family="Helvetica Neue, Arial, sans-serif" font-size="10" fill="#333">Loss computation</text>
+        </svg>
+      </div>
+      <div class="caption">Figure 6.4 &mdash; Mixed precision training data flow. Forward and backward passes run in BF16 for speed; the optimizer update uses FP32 for numerical stability.</div>
+    </div>
+
+    <div class="code-header">
+      <span>Python &mdash; mixed_precision.py</span>
+      <span class="layer-badge engineering">Engineering</span>
+    </div>
+    <pre><code class="language-python">import torch
+from torch.amp import autocast, GradScaler
+
+# Setup (use 'cuda:bf16' on Ampere+ GPUs for simplicity)
+scaler = GradScaler('cuda')  # only needed for FP16, not BF16
+use_bf16 = torch.cuda.is_bf16_supported()
+dtype = torch.bfloat16 if use_bf16 else torch.float16
+
+for batch in dataloader:
+    optimizer.zero_grad()
+
+    with autocast('cuda', dtype=dtype):
+        logits = model(batch['input_ids'])
+        loss = criterion(logits.view(-1, vocab_size),
+                        batch['labels'].view(-1))
+
+    if use_bf16:
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        optimizer.step()
+    else:
+        # FP16 requires loss scaling to prevent gradient underflow
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        scaler.step(optimizer)
+        scaler.update()</code></pre>
+
+    <!-- 6.3.3 Gradient Accumulation -->
+    <h3 id="grad-accumulation">6.3.3 Gradient Accumulation</h3>
+
+    <p>
+      Large-batch training is crucial for Transformers (batch sizes of 256&ndash;4096
+      sequences are common), but a single GPU may only fit 4&ndash;8 sequences.
+      <strong>Gradient accumulation</strong> simulates larger batches by
+      accumulating gradients over multiple micro-batches before performing a
+      single optimizer step.
+    </p>
+
+    <div class="code-header">
+      <span>Python &mdash; gradient_accumulation.py</span>
+      <span class="layer-badge engineering">Engineering</span>
+    </div>
+    <pre><code class="language-python">accumulation_steps = 8  # effective batch = micro_batch * accumulation_steps
+
+for step, batch in enumerate(dataloader):
+    with autocast('cuda', dtype=torch.bfloat16):
+        logits = model(batch['input_ids'])
+        loss = criterion(logits.view(-1, vocab_size),
+                        batch['labels'].view(-1))
+        loss = loss / accumulation_steps  # normalize
+
+    loss.backward()
+
+    if (step + 1) % accumulation_steps == 0:
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        optimizer.step()
+        scheduler.step()
+        optimizer.zero_grad()</code></pre>
+
+    <!-- 6.3.4 Complete Training Loop -->
+    <h3 id="training-loop">6.3.4 Complete Training Loop</h3>
+
+    <p>
+      Below is a complete training loop that combines all the techniques
+      discussed above: warmup + cosine LR scheduling, AdamW optimizer, mixed
+      precision (BF16), gradient accumulation, gradient clipping, and label
+      smoothing.
+    </p>
+
+    <div class="code-header">
+      <span>Python &mdash; train.py (complete training loop)</span>
+      <span class="layer-badge engineering">Engineering</span>
+    </div>
+    <pre><code class="language-python">import math
+import time
+import torch
+import torch.nn as nn
+from torch.amp import autocast
+from torch.utils.data import DataLoader
+
+# ── Hyperparameters ──────────────────────────────────────────────
+config = {
+    "d_model": 512,
+    "n_layers": 6,
+    "n_heads": 8,
+    "vocab_size": 32000,
+    "max_seq_len": 512,
+    "batch_size": 8,             # micro-batch per GPU
+    "accumulation_steps": 8,     # effective batch = 64
+    "lr_max": 3e-4,
+    "lr_min": 1e-5,
+    "warmup_steps": 2000,
+    "total_steps": 100000,
+    "weight_decay": 0.1,
+    "max_grad_norm": 1.0,
+    "label_smoothing": 0.1,
+    "beta1": 0.9,
+    "beta2": 0.95,
+    "eps": 1e-8,
+    "log_interval": 50,
+    "eval_interval": 1000,
+}
+
+# ── Model, Optimizer, Loss ───────────────────────────────────────
+model = build_transformer(config).cuda()  # your model factory
+optimizer = torch.optim.AdamW(
+    model.parameters(),
+    lr=config["lr_max"],
+    betas=(config["beta1"], config["beta2"]),
+    eps=config["eps"],
+    weight_decay=config["weight_decay"],
+)
+criterion = nn.CrossEntropyLoss(
+    label_smoothing=config["label_smoothing"],
+    ignore_index=-100,
+)
+
+# ── LR Schedule ──────────────────────────────────────────────────
+def get_lr(step):
+    if step < config["warmup_steps"]:
+        return config["lr_max"] * step / config["warmup_steps"]
+    progress = (step - config["warmup_steps"]) / \
+               max(1, config["total_steps"] - config["warmup_steps"])
+    return config["lr_min"] + 0.5 * (config["lr_max"] - config["lr_min"]) * \
+           (1.0 + math.cos(math.pi * progress))
+
+def set_lr(optimizer, lr):
+    for pg in optimizer.param_groups:
+        pg["lr"] = lr
+
+# ── Training Loop ────────────────────────────────────────────────
+train_loader = DataLoader(train_dataset, batch_size=config["batch_size"],
+                          shuffle=True, num_workers=4, pin_memory=True)
+
+model.train()
+optimizer.zero_grad()
+global_step = 0
+running_loss = 0.0
+best_val_loss = float("inf")
+
+for epoch in range(999):  # run until total_steps
+    for micro_step, batch in enumerate(train_loader):
+        input_ids = batch["input_ids"].cuda(non_blocking=True)
+        labels = batch["labels"].cuda(non_blocking=True)
+
+        # ── Forward (BF16) ───────────────────────────────────
+        with autocast("cuda", dtype=torch.bfloat16):
+            logits = model(input_ids)  # (B, T, V)
+            loss = criterion(
+                logits.view(-1, config["vocab_size"]),
+                labels.view(-1),
+            )
+            loss = loss / config["accumulation_steps"]
+
+        # ── Backward ─────────────────────────────────────────
+        loss.backward()
+        running_loss += loss.item()
+
+        # ── Optimizer step (every accumulation_steps) ────────
+        if (micro_step + 1) % config["accumulation_steps"] == 0:
+            # Gradient clipping
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                model.parameters(), config["max_grad_norm"]
+            )
+            # Update LR
+            lr = get_lr(global_step)
+            set_lr(optimizer, lr)
+            # Step
+            optimizer.step()
+            optimizer.zero_grad()
+            global_step += 1
+
+            # ── Logging ──────────────────────────────────────
+            if global_step % config["log_interval"] == 0:
+                avg_loss = running_loss / config["log_interval"]
+                print(f"step {global_step:>6d} | "
+                      f"loss {avg_loss:.4f} | "
+                      f"lr {lr:.2e} | "
+                      f"grad_norm {grad_norm:.2f}")
+                running_loss = 0.0
+
+            # ── Evaluation ───────────────────────────────────
+            if global_step % config["eval_interval"] == 0:
+                val_loss = evaluate(model, val_loader, criterion, config)
+                print(f"  >> val_loss {val_loss:.4f}")
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    torch.save(model.state_dict(), "best_model.pt")
+                model.train()
+
+            if global_step >= config["total_steps"]:
+                break
+    if global_step >= config["total_steps"]:
+        break
+
+print(f"Training complete. Best val loss: {best_val_loss:.4f}")</code></pre>
+
+    <!-- 6.3.5 Monitoring -->
+    <h3 id="monitoring">6.3.5 Monitoring Training Runs</h3>
+
+    <p>
+      Watching a single loss number is not enough. You should monitor three
+      quantities at every logging interval to diagnose problems early:
+    </p>
+
+    <ol>
+      <li><strong>Training loss</strong> &mdash; the primary optimization signal. Should decrease smoothly after warmup.</li>
+      <li><strong>Gradient norm</strong> &mdash; sudden spikes indicate instability. If clipping activates frequently, the learning rate may be too high.</li>
+      <li><strong>Learning rate</strong> &mdash; verify the schedule looks correct. Many bugs hide in the scheduler.</li>
+    </ol>
+
+    <div class="code-header">
+      <span>Python &mdash; monitoring.py</span>
+      <span class="layer-badge engineering">Engineering</span>
+    </div>
+    <pre><code class="language-python">import wandb  # or tensorboard
+
+wandb.init(project="transformer-training", config=config)
+
+# Inside the training loop, after each optimizer step:
+wandb.log({
+    "train/loss": avg_loss,
+    "train/grad_norm": grad_norm.item(),
+    "train/learning_rate": lr,
+    "train/global_step": global_step,
+    "train/epoch": epoch,
+    "train/tokens_seen": global_step * config["batch_size"]
+                         * config["accumulation_steps"]
+                         * config["max_seq_len"],
+}, step=global_step)
+
+# After evaluation:
+wandb.log({
+    "eval/loss": val_loss,
+    "eval/perplexity": math.exp(val_loss),
+}, step=global_step)</code></pre>
+
+    <div class="callout implementation">
+      <div class="callout-title">&#x1F527; Practical Tip: Gradient Norm Histograms</div>
+      <div class="callout-body">
+        <p>
+          Beyond the global gradient norm, logging per-layer gradient norms
+          can reveal which layers are causing instabilities. Attention
+          projection layers and the final LM head are common culprits.
+        </p>
+<pre><code class="language-python"># Per-layer gradient norms
+for name, param in model.named_parameters():
+    if param.grad is not None:
+        wandb.log({
+            f"grad_norm/{name}": param.grad.norm().item()
+        }, step=global_step)</code></pre>
+      </div>
+    </div>
+
+
+    <!-- ============================================================
+         6.4  GOING DEEPER
+         ============================================================ -->
+    <h2 id="going-deeper">6.4 Going Deeper</h2>
+
+    <h3>Training Instabilities at Scale</h3>
+
+    <p>
+      When training models with &gt;100 B parameters, a new class of problems
+      emerges: <strong>loss spikes</strong>. These are sudden, dramatic
+      increases in loss that can derail training entirely. Google&rsquo;s PaLM
+      paper reports &ldquo;approximately 20 loss spikes&rdquo; during training
+      of their 540 B model, each requiring a manual rollback to a checkpoint
+      before the spike and skipping the offending data batch.
+    </p>
+
+    <!-- SVG: Loss Spike Illustration -->
+    <div class="figure">
+      <div class="diagram-container">
+        <svg viewBox="0 0 700 250" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Loss spike during training">
+          <defs>
+            <marker id="arrow-ls" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <path d="M0,0 L8,3 L0,6" fill="#666"/>
+            </marker>
+          </defs>
+          <!-- Axes -->
+          <line x1="60" y1="200" x2="660" y2="200" stroke="#888" stroke-width="1.5" marker-end="url(#arrow-ls)"/>
+          <line x1="60" y1="200" x2="60" y2="20" stroke="#888" stroke-width="1.5" marker-end="url(#arrow-ls)"/>
+          <text x="360" y="230" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="12" fill="#666">Training Step</text>
+          <text x="30" y="110" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="12" fill="#666" transform="rotate(-90, 30, 110)">Loss</text>
+          <!-- Normal training curve -->
+          <polyline points="70,180 100,170 130,162 160,155 190,149 220,144 250,140 280,136 310,133 340,131 370,128
+                            400,126 410,125 415,70 420,55 425,110 430,132 440,128 470,125 500,122 530,120 560,118 590,116 620,115 650,114"
+                    fill="none" stroke="#4A90D9" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <!-- Spike annotation -->
+          <line x1="420" y1="50" x2="420" y2="30" stroke="#C0392B" stroke-width="1" stroke-dasharray="3,3"/>
+          <text x="420" y="24" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="10" fill="#C0392B" font-weight="600">Loss spike!</text>
+          <!-- Rollback annotation -->
+          <line x1="400" y1="126" x2="400" y2="148" stroke="#27AE60" stroke-width="1" stroke-dasharray="3,3"/>
+          <text x="370" y="160" font-family="Helvetica Neue, Arial, sans-serif" font-size="9" fill="#27AE60">rollback to checkpoint</text>
+          <line x1="430" y1="132" x2="430" y2="148" stroke="#27AE60" stroke-width="1" stroke-dasharray="3,3"/>
+          <text x="470" y="160" font-family="Helvetica Neue, Arial, sans-serif" font-size="9" fill="#27AE60">resume, skip batch</text>
+        </svg>
+      </div>
+      <div class="caption">Figure 6.5 &mdash; A loss spike during large-scale training. The model temporarily diverges before (manually or automatically) recovering via checkpoint rollback.</div>
+    </div>
+
+    <p>Common causes and mitigations include:</p>
+    <ul>
+      <li><strong>Data quality issues</strong> &mdash; corrupted or extremely unusual batches can cause gradient explosions. Skipping the offending batch often suffices.</li>
+      <li><strong>Numerical overflow in attention</strong> &mdash; softmax over very long sequences can overflow in FP16. BF16 or FP32 attention helps.</li>
+      <li><strong>Embedding scale mismatch</strong> &mdash; if embeddings grow too large, the initial softmax logits explode. z-loss regularization (adding \(\log^2 Z\) to the loss, where \(Z\) is the softmax normalizer) keeps logits in range.</li>
+    </ul>
+
+    <h3>Distributed Training Overview</h3>
+
+    <p>
+      No single GPU can hold a 70B+ parameter model. Modern training uses a
+      combination of three forms of parallelism:
+    </p>
+
+    <table>
+      <thead>
+        <tr><th>Strategy</th><th>What is split</th><th>Communication</th><th>Use case</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Data Parallelism (DDP)</strong></td>
+          <td>Data batches across GPUs</td>
+          <td>All-reduce gradients</td>
+          <td>Models that fit on one GPU</td>
+        </tr>
+        <tr>
+          <td><strong>Model (Tensor) Parallelism</strong></td>
+          <td>Weight matrices across GPUs</td>
+          <td>All-reduce activations</td>
+          <td>Single layers too large for one GPU</td>
+        </tr>
+        <tr>
+          <td><strong>Pipeline Parallelism</strong></td>
+          <td>Layers across GPUs</td>
+          <td>Point-to-point activations</td>
+          <td>Many layers, moderate per-layer size</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <p>
+      In practice, large-scale training uses <strong>3D parallelism</strong>:
+      tensor parallelism within a node (fast NVLink), pipeline parallelism
+      across nodes, and data parallelism at the outer level. Frameworks like
+      Megatron-LM, DeepSpeed, and FSDP (Fully Sharded Data Parallel)
+      orchestrate this automatically.
+    </p>
+
+
+    <!-- ============================================================
+         VIDEO EMBED
+         ============================================================ -->
+    <h2 id="video">Recommended Video</h2>
+
+    <div class="video-embed">
+      <iframe src="https://www.youtube.com/embed/kCc8FmEb1nY" allowfullscreen></iframe>
+      <div class="video-caption">Andrej Karpathy &mdash; Let's build GPT from scratch (includes complete training loop)</div>
+    </div>
+
+
+    <!-- ============================================================
+         CROSS-LINKS
+         ============================================================ -->
+    <h2 id="cross-links">Cross-Links to Other Pages</h2>
+
+    <p>Training touches every other component. Here is how the topics connect:</p>
+
+    <div style="display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0;">
+      <a href="attention.html" class="cross-link attention">&#x1F50D; Attention Mechanism</a>
+      <a href="embeddings.html" class="cross-link pe">&#x1F4CA; Embeddings &amp; Positional Encoding</a>
+      <a href="layer-norm.html" class="cross-link norm">&#x2696;&#xFE0F; Layer Normalization</a>
+      <a href="ffn.html" class="cross-link ffn">&#x2699;&#xFE0F; Feed-Forward Networks</a>
+      <a href="encoder-decoder.html" class="cross-link architecture">&#x1F3D7;&#xFE0F; Encoder-Decoder Architecture</a>
+      <a href="modern-variants.html" class="cross-link modern">&#x1F680; Modern Variants</a>
+    </div>
+
+    <ul>
+      <li><a href="attention.html">Attention</a> &mdash; softmax overflow in attention is a common source of training instabilities (Section 6.4). The attention score scaling by \(1/\sqrt{d_k}\) is itself a training stability technique.</li>
+      <li><a href="embeddings.html">Embeddings &amp; PE</a> &mdash; positional encoding scale and embedding initialization directly affect the gradient landscape during early training. Weight tying between embeddings and the LM head is a regularization choice.</li>
+      <li><a href="layer-norm.html">Layer Norm</a> &mdash; Pre-LN vs. Post-LN determines training stability. Pre-LN eliminates the need for learning rate warmup in some cases (but warmup still helps in practice).</li>
+      <li><a href="ffn.html">FFN</a> &mdash; the FFN contains the majority of parameters in each layer. Mixed precision behavior in the FFN (especially with GeLU/SwiGLU activations) matters for numerical stability.</li>
+      <li><a href="encoder-decoder.html">Encoder-Decoder</a> &mdash; the architecture determines how label smoothing is applied (target-side only) and affects the compute-to-parameter ratio in scaling laws.</li>
+      <li><a href="modern-variants.html">Modern Variants</a> &mdash; architectural choices like RMSNorm, RoPE, and GQA are all motivated by training efficiency and stability at scale. Chinchilla-optimal training directly informed LLaMA and Mistral design.</li>
+    </ul>
+
+
+    <!-- ============================================================
+         FOOTER NAVIGATION
+         ============================================================ -->
+    <footer class="page-footer">
+      <nav class="page-nav">
+        <a href="encoder-decoder.html">&larr; Prev: Encoder-Decoder</a>
+        <a href="modern-variants.html">Next: Modern Variants &rarr;</a>
+      </nav>
+      <p style="text-align:center; font-size:0.82rem; color:var(--text-muted);">
+        &copy; 2026 Transformer Architecture Deep Dive &mdash; Page 6 of 7
+      </p>
+    </footer>
+
+  </main>
+</div>
+
+<!-- ============================================================
+     SCRIPTS
+     ============================================================ -->
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+<script>
+// ── Theme Toggle ────────────────────────────────────────────────
+const toggle = document.querySelector('.theme-toggle');
+toggle.addEventListener('click', () => {
+  const current = document.documentElement.getAttribute('data-theme');
+  document.documentElement.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+  toggle.textContent = current === 'dark' ? '\u{1F319}' : '\u{2600}\u{FE0F}';
+});
+
+// ── Active Sidebar Link Highlighting ────────────────────────────
+const sections = document.querySelectorAll('h2[id], h3[id]');
+const tocLinks = document.querySelectorAll('.sidebar a');
+
+function highlightTOC() {
+  let current = '';
+  sections.forEach(section => {
+    const rect = section.getBoundingClientRect();
+    if (rect.top <= 100) current = section.id;
+  });
+  tocLinks.forEach(link => {
+    link.classList.toggle('active', link.getAttribute('href') === '#' + current);
+  });
+}
+window.addEventListener('scroll', highlightTOC, { passive: true });
+highlightTOC();
+</script>
+</body>
+</html>

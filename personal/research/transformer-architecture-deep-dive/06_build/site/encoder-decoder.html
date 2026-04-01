@@ -1,0 +1,436 @@
+<\!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Encoder-Decoder Architecture — Transformer Deep Dive</title>
+<link rel="stylesheet" href="style.css">
+<script>window.MathJax = {tex: {inlineMath: [['$','$'],['\\(','\\)']]}};</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+</head>
+<body>
+
+<nav class="top-nav">
+  <a href="index.html" class="nav-brand">Transformer Deep Dive</a>
+  <div class="nav-links">
+    <a href="index.html">Home</a>
+    <a href="self-attention.html">Self-Attention</a>
+    <a href="positional-encoding.html">Positional Encoding</a>
+    <a href="normalization.html">Normalization</a>
+    <a href="ffn-activations.html">FFN & Activations</a>
+    <a href="encoder-decoder.html" class="active">Encoder-Decoder</a>
+    <a href="training.html">Training</a>
+    <a href="modern-variants.html">Modern Variants</a>
+  </div>
+  <button class="theme-toggle" aria-label="Toggle theme">🌙</button>
+</nav>
+
+<div class="page-wrapper">
+<aside class="sidebar">
+  <h3>On This Page</h3>
+  <ul>
+    <li><a href="#intuition">5.1 Intuition</a></li>
+    <li><a href="#formalism">5.2 Formalism</a>
+      <ul>
+        <li><a href="#transformer-block">Transformer Block</a></li>
+        <li><a href="#encoder-stack">Encoder Stack</a></li>
+        <li><a href="#decoder-stack">Decoder Stack</a></li>
+        <li><a href="#residual-stream">Residual Stream</a></li>
+        <li><a href="#variants">Architecture Variants</a></li>
+      </ul>
+    </li>
+    <li><a href="#engineering">5.3 Engineering</a>
+      <ul>
+        <li><a href="#impl-block">Transformer Block</a></li>
+        <li><a href="#impl-gpt">Minimal GPT</a></li>
+        <li><a href="#weight-tying">Weight Tying</a></li>
+        <li><a href="#param-count">Parameter Counting</a></li>
+      </ul>
+    </li>
+    <li><a href="#going-deeper">5.4 Going Deeper</a></li>
+  </ul>
+</aside>
+
+<main class="main-content">
+
+<div class="page-header">
+  <div class="breadcrumb"><a href="index.html">Home</a> / Encoder-Decoder Architecture</div>
+  <h1>The Encoder-Decoder Architecture</h1>
+  <p class="subtitle">The complete Transformer pipeline — from input tokens to output predictions, and why decoder-only models won the LLM race.</p>
+</div>
+
+<\!-- ==================== INTUITION ==================== -->
+<h2 id="intuition">5.1 Intuition Layer</h2>
+<div class="layer-indicator"><span class="layer-badge intuition">Intuition</span></div>
+
+<h3>5.1.1 From Seq2Seq to the Transformer</h3>
+
+<p>Before the Transformer, the dominant architecture for sequence-to-sequence tasks (like translation) was the RNN encoder-decoder with attention (Bahdanau, 2015). The encoder read the input sequence into a fixed-size context vector, and the decoder generated the output one token at a time, consulting the encoder's hidden states via attention.</p>
+
+<p>The problem? RNNs process tokens <strong>sequentially</strong>. Token 100 must wait for tokens 1-99 to be processed. This kills parallelism and creates information bottlenecks — information from early tokens must survive through hundreds of recurrent steps.</p>
+
+<div class="callout key-idea">
+  <div class="callout-title">The Transformer's Core Innovation</div>
+  <div class="callout-body">Replace recurrence entirely with self-attention. Every token can directly attend to every other token in a single step — no sequential processing needed. This enables massive parallelism during training and eliminates the information bottleneck.</div>
+</div>
+
+<h3>5.1.2 The Assembly Line Metaphor</h3>
+
+<p>Think of the Transformer as a two-stage assembly line:</p>
+<ul>
+  <li><strong>Encoder</strong> (the reader): Reads the entire input and builds a rich, contextual representation of every token. Like a careful reader who annotates every word with its meaning in context.</li>
+  <li><strong>Decoder</strong> (the writer): Generates output one token at a time, consulting both its own previous output and the encoder's representations. Like a translator who reads the annotated source text while writing the translation.</li>
+</ul>
+
+<h3>5.1.3 Architecture Family Tree</h3>
+
+<p>The original Transformer uses both encoder and decoder. But subsequent work showed you don't always need both:</p>
+
+<div class="diagram-container">
+<svg viewBox="0 0 700 220" xmlns="http://www.w3.org/2000/svg" style="max-width:700px;margin:0 auto;display:block;">
+  <\!-- Encoder-Only -->
+  <rect x="20" y="30" width="200" height="170" rx="12" fill="#4A90D9" opacity="0.1" stroke="#4A90D9" stroke-width="2"/>
+  <text x="120" y="55" text-anchor="middle" fill="#4A90D9" font-family="Helvetica Neue,sans-serif" font-size="15" font-weight="700">Encoder-Only</text>
+  <text x="120" y="80" text-anchor="middle" fill="#333" font-family="Helvetica Neue,sans-serif" font-size="12">BERT, RoBERTa</text>
+  <text x="120" y="105" text-anchor="middle" fill="#666" font-family="Helvetica Neue,sans-serif" font-size="11">Bidirectional context</text>
+  <text x="120" y="125" text-anchor="middle" fill="#666" font-family="Helvetica Neue,sans-serif" font-size="11">MLM objective</text>
+  <text x="120" y="155" text-anchor="middle" fill="#888" font-family="Helvetica Neue,sans-serif" font-size="11" font-style="italic">Classification, NER,</text>
+  <text x="120" y="172" text-anchor="middle" fill="#888" font-family="Helvetica Neue,sans-serif" font-size="11" font-style="italic">embeddings, retrieval</text>
+  <\!-- Decoder-Only -->
+  <rect x="250" y="30" width="200" height="170" rx="12" fill="#E67E22" opacity="0.1" stroke="#E67E22" stroke-width="2"/>
+  <text x="350" y="55" text-anchor="middle" fill="#E67E22" font-family="Helvetica Neue,sans-serif" font-size="15" font-weight="700">Decoder-Only</text>
+  <text x="350" y="80" text-anchor="middle" fill="#333" font-family="Helvetica Neue,sans-serif" font-size="12">GPT, LLaMA, Mistral</text>
+  <text x="350" y="105" text-anchor="middle" fill="#666" font-family="Helvetica Neue,sans-serif" font-size="11">Causal (left-to-right)</text>
+  <text x="350" y="125" text-anchor="middle" fill="#666" font-family="Helvetica Neue,sans-serif" font-size="11">Autoregressive LM</text>
+  <text x="350" y="155" text-anchor="middle" fill="#888" font-family="Helvetica Neue,sans-serif" font-size="11" font-style="italic">Text generation,</text>
+  <text x="350" y="172" text-anchor="middle" fill="#888" font-family="Helvetica Neue,sans-serif" font-size="11" font-style="italic">chat, reasoning</text>
+  <\!-- Encoder-Decoder -->
+  <rect x="480" y="30" width="200" height="170" rx="12" fill="#27AE60" opacity="0.1" stroke="#27AE60" stroke-width="2"/>
+  <text x="580" y="55" text-anchor="middle" fill="#27AE60" font-family="Helvetica Neue,sans-serif" font-size="15" font-weight="700">Encoder-Decoder</text>
+  <text x="580" y="80" text-anchor="middle" fill="#333" font-family="Helvetica Neue,sans-serif" font-size="12">T5, BART, mBART</text>
+  <text x="580" y="105" text-anchor="middle" fill="#666" font-family="Helvetica Neue,sans-serif" font-size="11">Bidirectional enc +</text>
+  <text x="580" y="122" text-anchor="middle" fill="#666" font-family="Helvetica Neue,sans-serif" font-size="11">causal dec</text>
+  <text x="580" y="155" text-anchor="middle" fill="#888" font-family="Helvetica Neue,sans-serif" font-size="11" font-style="italic">Translation, summary,</text>
+  <text x="580" y="172" text-anchor="middle" fill="#888" font-family="Helvetica Neue,sans-serif" font-size="11" font-style="italic">seq-to-seq tasks</text>
+</svg>
+<div class="caption">Figure 5.1: The three Transformer architecture families. Decoder-only has become dominant for LLMs due to its simplicity and scaling properties.</div>
+</div>
+
+<\!-- ==================== FORMALISM ==================== -->
+<h2 id="formalism">5.2 Formalism Layer</h2>
+<div class="layer-indicator"><span class="layer-badge formalism">Formalism</span></div>
+
+<h3 id="transformer-block">5.2.1 The Complete Transformer Block</h3>
+
+<p>Every Transformer layer (in the modern Pre-LN formulation) consists of two sublayers with residual connections:</p>
+
+<div class="math-block">
+$$\begin{aligned}
+x' &= x + \text{Attention}(\text{LN}(x)) \quad &\text{(sublayer 1: attention + residual)} \\
+x'' &= x' + \text{FFN}(\text{LN}(x')) \quad &\text{(sublayer 2: FFN + residual)}
+\end{aligned}$$
+</div>
+
+<p>Each sublayer has the same pattern: <strong>normalize → transform → add back</strong>. The residual connections ($+x$) ensure that information can flow directly through the network without being forced through every sublayer. See <a href="normalization.html" class="cross-link norm">Normalization →</a> for why Pre-LN is preferred over Post-LN.</p>
+
+<div class="diagram-container">
+<svg viewBox="0 0 500 350" xmlns="http://www.w3.org/2000/svg" style="max-width:450px;margin:0 auto;display:block;">
+  <\!-- Input -->
+  <rect x="180" y="310" width="140" height="30" rx="6" fill="#2C3E50"/>
+  <text x="250" y="330" text-anchor="middle" fill="white" font-size="12" font-weight="600" font-family="Helvetica Neue,sans-serif">Input x</text>
+  <\!-- LayerNorm 1 -->
+  <line x1="250" y1="310" x2="250" y2="280" stroke="#999" stroke-width="1.5"/>
+  <rect x="195" y="255" width="110" height="25" rx="4" fill="#27AE60"/>
+  <text x="250" y="272" text-anchor="middle" fill="white" font-size="11" font-weight="600" font-family="Helvetica Neue,sans-serif">LayerNorm</text>
+  <\!-- Self-Attention -->
+  <line x1="250" y1="255" x2="250" y2="230" stroke="#999" stroke-width="1.5"/>
+  <rect x="180" y="200" width="140" height="30" rx="6" fill="#4A90D9"/>
+  <text x="250" y="220" text-anchor="middle" fill="white" font-size="12" font-weight="600" font-family="Helvetica Neue,sans-serif">Self-Attention</text>
+  <\!-- Residual 1 -->
+  <line x1="250" y1="200" x2="250" y2="180" stroke="#999" stroke-width="1.5"/>
+  <circle cx="250" cy="175" r="10" fill="none" stroke="#E67E22" stroke-width="2"/>
+  <text x="250" y="179" text-anchor="middle" fill="#E67E22" font-size="12" font-weight="700">+</text>
+  <\!-- Residual line -->
+  <line x1="170" y1="325" x2="130" y2="325" stroke="#E67E22" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <line x1="130" y1="325" x2="130" y2="175" stroke="#E67E22" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <line x1="130" y1="175" x2="240" y2="175" stroke="#E67E22" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <\!-- LayerNorm 2 -->
+  <line x1="250" y1="165" x2="250" y2="145" stroke="#999" stroke-width="1.5"/>
+  <rect x="195" y="120" width="110" height="25" rx="4" fill="#27AE60"/>
+  <text x="250" y="137" text-anchor="middle" fill="white" font-size="11" font-weight="600" font-family="Helvetica Neue,sans-serif">LayerNorm</text>
+  <\!-- FFN -->
+  <line x1="250" y1="120" x2="250" y2="100" stroke="#999" stroke-width="1.5"/>
+  <rect x="180" y="70" width="140" height="30" rx="6" fill="#E67E22"/>
+  <text x="250" y="90" text-anchor="middle" fill="white" font-size="12" font-weight="600" font-family="Helvetica Neue,sans-serif">Feed-Forward</text>
+  <\!-- Residual 2 -->
+  <line x1="250" y1="70" x2="250" y2="50" stroke="#999" stroke-width="1.5"/>
+  <circle cx="250" cy="45" r="10" fill="none" stroke="#E67E22" stroke-width="2"/>
+  <text x="250" y="49" text-anchor="middle" fill="#E67E22" font-size="12" font-weight="700">+</text>
+  <\!-- Second residual line -->
+  <line x1="380" y1="175" x2="380" y2="45" stroke="#E67E22" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <line x1="260" y1="175" x2="380" y2="175" stroke="#E67E22" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <line x1="260" y1="45" x2="380" y2="45" stroke="#E67E22" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <\!-- Output -->
+  <line x1="250" y1="35" x2="250" y2="15" stroke="#999" stroke-width="1.5"/>
+  <rect x="180" y="0" width="140" height="20" rx="4" fill="#8E44AD"/>
+  <text x="250" y="14" text-anchor="middle" fill="white" font-size="11" font-weight="600" font-family="Helvetica Neue,sans-serif">Output x''</text>
+</svg>
+<div class="caption">Figure 5.2: A Pre-LN Transformer block. Orange dashed lines show residual connections bypassing each sublayer.</div>
+</div>
+
+<h3 id="encoder-stack">5.2.2 Encoder Stack</h3>
+
+<p>The encoder consists of $N$ identical blocks (typically $N=6$ or $N=12$). Each block contains <strong>bidirectional self-attention</strong> (no masking — every token attends to every other token) followed by a <a href="ffn-activations.html" class="cross-link ffn">feed-forward network →</a>.</p>
+
+<p>The encoder processes the entire input sequence in parallel and outputs contextual representations $H_{\text{enc}} \in \mathbb{R}^{n \times d_{\text{model}}}$. Each token's representation incorporates information from the full input context.</p>
+
+<h3 id="decoder-stack">5.2.3 Decoder Stack</h3>
+
+<p>The decoder also consists of $N$ identical blocks, but each block has <strong>three</strong> sublayers:</p>
+
+<ol>
+  <li><strong>Masked self-attention</strong>: Token $i$ can only attend to positions $\leq i$ (causal mask). See <a href="self-attention.html#impl-mask" class="cross-link attention">causal mask →</a></li>
+  <li><strong>Cross-attention</strong>: Queries from decoder, keys and values from encoder output $H_{\text{enc}}$. This is how the decoder "reads" the encoder's understanding.</li>
+  <li><strong>Feed-forward network</strong>: Same as encoder FFN.</li>
+</ol>
+
+<p>Cross-attention is what connects the encoder and decoder. The decoder computes: $\text{CrossAttn}(Q_{\text{dec}}, K_{\text{enc}}, V_{\text{enc}})$ — decoder tokens query the encoder's representations to find relevant input information.</p>
+
+<h3 id="residual-stream">5.2.4 The Residual Stream Interpretation</h3>
+
+<p>A powerful way to think about the Transformer comes from mechanistic interpretability: the <strong>residual stream</strong> view.</p>
+
+<p>Instead of thinking of layers as sequential transformations, think of the $d_{\text{model}}$-dimensional vector at each position as a <strong>stream</strong>. Each sublayer (attention, FFN) <em>reads from</em> the stream and <em>adds its contribution back</em>:</p>
+
+<div class="math-block">
+$$x_{\text{stream}} = x_0 + \sum_{l=1}^{N} \left[\text{attn}_l(x) + \text{ffn}_l(x)\right]$$
+</div>
+
+<p>This means:</p>
+<ul>
+  <li>Layers are <strong>additive</strong>, not sequential transformations — they don't overwrite, they contribute</li>
+  <li>Information from early layers persists through the residual connection</li>
+  <li>The final output is a sum of contributions from all layers</li>
+  <li>Different layers can specialize: some do syntactic processing, others do semantic reasoning</li>
+</ul>
+
+<h3 id="variants">5.2.5 Architecture Variants Deep Dive</h3>
+
+<table>
+  <thead><tr><th>Feature</th><th>BERT (Encoder-Only)</th><th>GPT (Decoder-Only)</th><th>T5 (Encoder-Decoder)</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Architecture</strong></td><td>Encoder only</td><td>Decoder only</td><td>Full encoder-decoder</td></tr>
+    <tr><td><strong>Attention</strong></td><td>Bidirectional</td><td>Causal (left-to-right)</td><td>Bidirectional enc, causal dec</td></tr>
+    <tr><td><strong>Objective</strong></td><td>Masked LM + NSP</td><td>Causal LM (next token)</td><td>Text-to-text (span corruption)</td></tr>
+    <tr><td><strong>Context</strong></td><td>Full bidirectional</td><td>Past only</td><td>Full input + past output</td></tr>
+    <tr><td><strong>Generation</strong></td><td>Not autoregressive</td><td>Autoregressive</td><td>Autoregressive (decoder)</td></tr>
+    <tr><td><strong>Use Cases</strong></td><td>Classification, NER, retrieval</td><td>Text gen, chat, reasoning</td><td>Translation, summarization</td></tr>
+  </tbody>
+</table>
+
+<\!-- ==================== ENGINEERING ==================== -->
+<h2 id="engineering">5.3 Engineering Layer</h2>
+<div class="layer-indicator"><span class="layer-badge engineering">Engineering</span></div>
+
+<h3 id="impl-block">5.3.1 Building a Transformer Block</h3>
+
+<div class="code-header"><span>Python — TransformerBlock (Pre-LN)</span></div>
+<pre><code class="language-python">import torch
+import torch.nn as nn
+
+class TransformerBlock(nn.Module):
+    """Pre-LN Transformer block: LN → Attention → Add → LN → FFN → Add"""
+    
+    def __init__(self, d_model, n_heads, d_ff, dropout=0.1):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(d_model)
+        self.attn = nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True)
+        self.ln2 = nn.LayerNorm(d_model)
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, d_ff),
+            nn.GELU(),
+            nn.Linear(d_ff, d_model),
+            nn.Dropout(dropout),
+        )
+        self.dropout = nn.Dropout(dropout)
+    
+    def forward(self, x, mask=None):
+        # Sublayer 1: Attention with residual
+        normed = self.ln1(x)
+        attn_out, _ = self.attn(normed, normed, normed, attn_mask=mask)
+        x = x + self.dropout(attn_out)
+        
+        # Sublayer 2: FFN with residual
+        x = x + self.ffn(self.ln2(x))
+        return x</code></pre>
+
+<h3 id="impl-gpt">5.3.2 Building a Minimal GPT</h3>
+
+<div class="code-header"><span>Python — Minimal GPT model</span></div>
+<pre><code class="language-python">class GPT(nn.Module):
+    """Minimal GPT (decoder-only Transformer)."""
+    
+    def __init__(self, vocab_size, d_model=384, n_heads=6, n_layers=6,
+                 d_ff=1536, max_seq_len=256, dropout=0.1):
+        super().__init__()
+        self.d_model = d_model
+        
+        # Token and position embeddings
+        self.tok_emb = nn.Embedding(vocab_size, d_model)
+        self.pos_emb = nn.Embedding(max_seq_len, d_model)
+        self.drop = nn.Dropout(dropout)
+        
+        # Transformer blocks
+        self.blocks = nn.ModuleList([
+            TransformerBlock(d_model, n_heads, d_ff, dropout)
+            for _ in range(n_layers)
+        ])
+        
+        # Final layer norm and output head
+        self.ln_f = nn.LayerNorm(d_model)
+        self.head = nn.Linear(d_model, vocab_size, bias=False)
+        
+        # Weight tying: share embedding and output weights
+        self.head.weight = self.tok_emb.weight
+    
+    def forward(self, idx):
+        B, T = idx.shape
+        
+        # Embeddings
+        tok = self.tok_emb(idx)                # (B, T, d_model)
+        pos = self.pos_emb(torch.arange(T, device=idx.device))  # (T, d_model)
+        x = self.drop(tok + pos)
+        
+        # Causal mask
+        mask = torch.triu(torch.ones(T, T, device=idx.device) * float('-inf'), diagonal=1)
+        
+        # Transformer blocks
+        for block in self.blocks:
+            x = block(x, mask=mask)
+        
+        # Output
+        x = self.ln_f(x)
+        logits = self.head(x)                  # (B, T, vocab_size)
+        return logits
+    
+    @torch.no_grad()
+    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
+        """Autoregressive generation with optional top-k sampling."""
+        for _ in range(max_new_tokens):
+            # Crop to max sequence length
+            idx_cond = idx[:, -256:]
+            logits = self(idx_cond)
+            logits = logits[:, -1, :] / temperature
+            
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = float('-inf')
+            
+            probs = torch.softmax(logits, dim=-1)
+            idx_next = torch.multinomial(probs, num_samples=1)
+            idx = torch.cat([idx, idx_next], dim=1)
+        return idx
+
+
+# Example usage
+model = GPT(vocab_size=50257, d_model=384, n_heads=6, n_layers=6)
+total_params = sum(p.numel() for p in model.parameters())
+print(f"Total parameters: {total_params:,}")  # ~10M for GPT-small</code></pre>
+
+<h3 id="weight-tying">5.3.3 Weight Tying</h3>
+
+<p>Notice the line <code>self.head.weight = self.tok_emb.weight</code>. This is <strong>weight tying</strong> — the input embedding matrix and the output projection matrix share the same weights. The intuition: tokens that are close in embedding space should also have similar output probabilities. This saves $\text{vocab\_size} \times d_{\text{model}}$ parameters (e.g., 50257 × 768 = 38.6M for GPT-2).</p>
+
+<h3 id="param-count">5.3.4 Parameter Counting</h3>
+
+<div class="code-header"><span>Python — Parameter count breakdown</span></div>
+<pre><code class="language-python">def count_params(vocab_size, d_model, n_heads, n_layers, d_ff):
+    """Count parameters for a GPT-style model."""
+    # Embeddings (token + position)
+    emb = vocab_size * d_model + 1024 * d_model  # assuming max_len=1024
+    
+    # Per Transformer block
+    attn = 4 * d_model * d_model          # W_Q, W_K, W_V, W_O
+    ffn = 2 * d_model * d_ff              # W_1, W_2
+    ln = 4 * d_model                      # 2 LayerNorms × (gamma + beta)
+    per_block = attn + ffn + ln
+    
+    # Final LayerNorm + output head (tied with embeddings, so don't double-count)
+    final = 2 * d_model  # final LN
+    
+    total = emb + n_layers * per_block + final
+    
+    print(f"Embeddings:        {emb:>12,}")
+    print(f"Per block:         {per_block:>12,} × {n_layers} = {per_block*n_layers:,}")
+    print(f"  - Attention:     {attn:>12,}")
+    print(f"  - FFN:           {ffn:>12,}")
+    print(f"  - LayerNorm:     {ln:>12,}")
+    print(f"Final LN:          {final:>12,}")
+    print(f"Total:             {total:>12,}")
+    return total
+
+# GPT-2 Small
+count_params(50257, 768, 12, 12, 3072)   # ~124M
+print()
+# GPT-2 Large  
+count_params(50257, 1280, 20, 36, 5120)  # ~774M</code></pre>
+
+<\!-- ==================== GOING DEEPER ==================== -->
+<h2 id="going-deeper">5.4 Going Deeper</h2>
+
+<h3>Why Decoder-Only Won for LLMs</h3>
+<p>Several factors favor decoder-only architectures:</p>
+<ul>
+  <li><strong>Simplicity</strong>: One architecture, one objective (next token prediction), no cross-attention complexity</li>
+  <li><strong>Scaling</strong>: Simpler architectures tend to scale more predictably</li>
+  <li><strong>In-context learning</strong>: Decoder-only models naturally support few-shot prompting — just put examples in the prompt</li>
+  <li><strong>Universality</strong>: Any task can be framed as text generation</li>
+</ul>
+
+<h3>Historical Timeline</h3>
+<ul>
+  <li><strong>2017</strong>: Original Transformer (encoder-decoder, translation)</li>
+  <li><strong>2018</strong>: GPT-1 (decoder-only, language modeling) + BERT (encoder-only, masked LM)</li>
+  <li><strong>2019</strong>: GPT-2, T5 (text-to-text encoder-decoder)</li>
+  <li><strong>2020</strong>: GPT-3 (few-shot via in-context learning)</li>
+  <li><strong>2023+</strong>: LLaMA, Mistral, Gemma — decoder-only dominates</li>
+</ul>
+
+<div class="video-embed">
+  <iframe src="https://www.youtube.com/embed/kCc8FmEb1nY" allowfullscreen loading="lazy"></iframe>
+  <div class="video-caption">Andrej Karpathy — Let's build GPT from scratch (2-hour walkthrough of building a decoder-only Transformer)</div>
+</div>
+
+<h3>Related Pages</h3>
+<p>
+  <a href="self-attention.html" class="cross-link attention">Self-Attention →</a> The core building block of every Transformer layer<br><br>
+  <a href="positional-encoding.html" class="cross-link pe">Positional Encoding →</a> Added at input, before the first layer<br><br>
+  <a href="normalization.html" class="cross-link norm">Normalization →</a> Pre-LN or Post-LN in each sublayer<br><br>
+  <a href="ffn-activations.html" class="cross-link ffn">FFN & Activations →</a> The second sublayer in every block<br><br>
+  <a href="training.html" class="cross-link training">Training →</a> From model architecture to training loop<br><br>
+  <a href="modern-variants.html" class="cross-link modern">Modern Variants →</a> How the base architecture has evolved
+</p>
+
+<div class="page-footer">
+  <div class="page-nav">
+    <a href="ffn-activations.html">← FFN & Activations</a>
+    <a href="training.html">Training →</a>
+  </div>
+</div>
+
+</main>
+</div>
+
+<script>
+const toggle = document.querySelector('.theme-toggle');
+toggle.addEventListener('click', () => {
+  const current = document.documentElement.getAttribute('data-theme');
+  document.documentElement.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+  toggle.textContent = current === 'dark' ? '🌙' : '☀️';
+});
+</script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</body>
+</html>

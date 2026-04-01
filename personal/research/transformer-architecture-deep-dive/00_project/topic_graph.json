@@ -1,0 +1,359 @@
+{
+  "primary_topic": "Transformer Architecture",
+  "classification": "ML/Deep Learning — Neural Network Architecture",
+  "depth_contract": "graduate_note",
+  "nodes": [
+    {
+      "id": "prereq-linear-algebra",
+      "type": "prerequisite",
+      "title": "Linear Algebra (Matrix Multiplication, Projections, Eigenvalues)",
+      "satisfied": true,
+      "subtopic_dependency": ["self-attention", "positional-encoding"]
+    },
+    {
+      "id": "prereq-calculus",
+      "type": "prerequisite",
+      "title": "Calculus & Optimization (Gradients, Chain Rule, SGD)",
+      "satisfied": true,
+      "subtopic_dependency": ["training"]
+    },
+    {
+      "id": "prereq-probability",
+      "type": "prerequisite",
+      "title": "Probability & Information Theory (Softmax, Cross-Entropy, KL Divergence)",
+      "satisfied": true,
+      "subtopic_dependency": ["self-attention", "training"]
+    },
+    {
+      "id": "prereq-neural-nets",
+      "type": "prerequisite",
+      "title": "Neural Network Fundamentals (Forward/Backward Pass, Activation Functions)",
+      "satisfied": true,
+      "subtopic_dependency": ["ffn-activations", "training"]
+    },
+    {
+      "id": "prereq-pytorch",
+      "type": "prerequisite",
+      "title": "PyTorch Programming (Tensors, nn.Module, autograd)",
+      "satisfied": true,
+      "subtopic_dependency": ["self-attention", "ffn-activations", "encoder-decoder"]
+    },
+    {
+      "id": "prereq-rnns",
+      "type": "prerequisite",
+      "title": "Sequential Models (RNNs, LSTMs, Seq2Seq) — Why Transformers Were Needed",
+      "satisfied": true,
+      "subtopic_dependency": ["encoder-decoder"]
+    },
+    {
+      "id": "core-attention-mechanism",
+      "type": "core_concept",
+      "title": "Scaled Dot-Product Attention",
+      "subtopic": "self-attention",
+      "concepts": ["query-key-value", "dot-product-similarity", "softmax-normalization", "scaling-factor-1/sqrt(dk)", "attention-weights-as-soft-lookup"]
+    },
+    {
+      "id": "core-multi-head-attention",
+      "type": "core_concept",
+      "title": "Multi-Head Attention",
+      "subtopic": "self-attention",
+      "concepts": ["parallel-attention-heads", "head-dimensionality", "concatenation-and-projection", "what-different-heads-learn"]
+    },
+    {
+      "id": "core-self-vs-cross-attention",
+      "type": "core_concept",
+      "title": "Self-Attention vs Cross-Attention",
+      "subtopic": "self-attention",
+      "concepts": ["self-attention-Q=K=V-source", "cross-attention-Q-from-decoder-KV-from-encoder", "masked-self-attention"]
+    },
+    {
+      "id": "core-sinusoidal-pe",
+      "type": "core_concept",
+      "title": "Sinusoidal Positional Encoding",
+      "subtopic": "positional-encoding",
+      "concepts": ["sin-cos-frequency-bands", "relative-position-via-rotation", "why-permutation-invariance-needs-position"]
+    },
+    {
+      "id": "core-learned-pe",
+      "type": "core_concept",
+      "title": "Learned Positional Embeddings",
+      "subtopic": "positional-encoding",
+      "concepts": ["trainable-embedding-table", "fixed-max-length", "comparison-with-sinusoidal"]
+    },
+    {
+      "id": "core-rope",
+      "type": "core_concept",
+      "title": "Rotary Position Embedding (RoPE)",
+      "subtopic": "positional-encoding",
+      "concepts": ["rotation-matrix-encoding", "relative-position-in-dot-product", "long-context-extrapolation"]
+    },
+    {
+      "id": "core-alibi",
+      "type": "core_concept",
+      "title": "ALiBi (Attention with Linear Biases)",
+      "subtopic": "positional-encoding",
+      "concepts": ["linear-bias-on-attention-scores", "no-position-embedding", "length-generalization"]
+    },
+    {
+      "id": "core-layer-norm",
+      "type": "core_concept",
+      "title": "Layer Normalization",
+      "subtopic": "normalization",
+      "concepts": ["per-sample-normalization", "affine-parameters", "gradient-flow-stabilization"]
+    },
+    {
+      "id": "core-pre-vs-post-ln",
+      "type": "core_concept",
+      "title": "Pre-LN vs Post-LN Architecture",
+      "subtopic": "normalization",
+      "concepts": ["placement-relative-to-residual", "training-stability-tradeoffs", "gradient-magnitude-analysis"]
+    },
+    {
+      "id": "core-rmsnorm",
+      "type": "core_concept",
+      "title": "RMSNorm",
+      "subtopic": "normalization",
+      "concepts": ["root-mean-square-normalization", "removing-mean-centering", "computational-efficiency"]
+    },
+    {
+      "id": "core-ffn",
+      "type": "core_concept",
+      "title": "Position-wise Feed-Forward Network",
+      "subtopic": "ffn-activations",
+      "concepts": ["two-linear-layers", "expansion-ratio-4x", "per-position-independence", "ffn-as-key-value-memory"]
+    },
+    {
+      "id": "core-activations",
+      "type": "core_concept",
+      "title": "Activation Functions in Transformers",
+      "subtopic": "ffn-activations",
+      "concepts": ["ReLU", "GELU", "SwiGLU", "gated-linear-units", "smooth-vs-sparse-activations"]
+    },
+    {
+      "id": "core-residual-connections",
+      "type": "core_concept",
+      "title": "Residual Connections & Information Highway",
+      "subtopic": "encoder-decoder",
+      "concepts": ["skip-connections", "gradient-flow", "residual-stream-view"]
+    },
+    {
+      "id": "core-encoder-stack",
+      "type": "core_concept",
+      "title": "Encoder Stack Architecture",
+      "subtopic": "encoder-decoder",
+      "concepts": ["self-attention-then-ffn", "layer-stacking", "bidirectional-context"]
+    },
+    {
+      "id": "core-decoder-stack",
+      "type": "core_concept",
+      "title": "Decoder Stack Architecture",
+      "subtopic": "encoder-decoder",
+      "concepts": ["masked-self-attention", "cross-attention", "autoregressive-generation"]
+    },
+    {
+      "id": "core-arch-variants",
+      "type": "core_concept",
+      "title": "Encoder-Only vs Decoder-Only vs Encoder-Decoder",
+      "subtopic": "encoder-decoder",
+      "concepts": ["BERT-style-encoder-only", "GPT-style-decoder-only", "T5-style-encoder-decoder", "task-suitability"]
+    },
+    {
+      "id": "core-lr-schedule",
+      "type": "core_concept",
+      "title": "Learning Rate Schedules",
+      "subtopic": "training",
+      "concepts": ["linear-warmup", "cosine-decay", "inverse-sqrt-schedule", "warmup-necessity"]
+    },
+    {
+      "id": "core-optimizers",
+      "type": "core_concept",
+      "title": "Optimizer Choices",
+      "subtopic": "training",
+      "concepts": ["Adam", "AdamW-weight-decay-decoupling", "LAMB", "gradient-clipping"]
+    },
+    {
+      "id": "core-mixed-precision",
+      "type": "core_concept",
+      "title": "Mixed Precision Training",
+      "subtopic": "training",
+      "concepts": ["FP16-BF16", "loss-scaling", "gradient-overflow", "hardware-utilization"]
+    },
+    {
+      "id": "core-scaling-laws",
+      "type": "core_concept",
+      "title": "Scaling Laws",
+      "subtopic": "training",
+      "concepts": ["Kaplan-et-al-scaling", "Chinchilla-optimal", "compute-data-params-tradeoff"]
+    },
+    {
+      "id": "advanced-sparse-attention",
+      "type": "advanced",
+      "title": "Sparse Attention Patterns",
+      "subtopic": "modern-variants",
+      "concepts": ["Longformer-local+global", "BigBird-random+window+global", "complexity-reduction-O(n*sqrt(n))"]
+    },
+    {
+      "id": "advanced-linear-attention",
+      "type": "advanced",
+      "title": "Linear Attention & Kernel Methods",
+      "subtopic": "modern-variants",
+      "concepts": ["kernel-trick-on-attention", "Performer-FAVOR+", "complexity-O(n)"]
+    },
+    {
+      "id": "advanced-moe",
+      "type": "advanced",
+      "title": "Mixture-of-Experts",
+      "subtopic": "modern-variants",
+      "concepts": ["Switch-Transformer", "GShard", "top-k-routing", "load-balancing-loss", "conditional-computation"]
+    },
+    {
+      "id": "advanced-flash-attention",
+      "type": "advanced",
+      "title": "FlashAttention — IO-Aware Exact Attention",
+      "subtopic": "modern-variants",
+      "concepts": ["tiling-for-SRAM", "recomputation-vs-materialization", "wall-clock-speedup", "memory-savings"]
+    },
+    {
+      "id": "advanced-vit",
+      "type": "advanced",
+      "title": "Vision Transformers (ViT)",
+      "subtopic": "modern-variants",
+      "concepts": ["patch-embeddings", "CLS-token", "position-embedding-for-2D", "DeiT-data-efficiency"]
+    },
+    {
+      "id": "advanced-ssm-hybrids",
+      "type": "advanced",
+      "title": "State-Space Model Hybrids (Mamba, Jamba)",
+      "subtopic": "modern-variants",
+      "concepts": ["selective-state-spaces", "linear-recurrence", "hybrid-attention+SSM-layers"]
+    },
+    {
+      "id": "impl-kv-cache",
+      "type": "implementation",
+      "title": "KV Cache for Efficient Inference",
+      "subtopic": "self-attention",
+      "concepts": ["caching-key-value-pairs", "incremental-decoding", "memory-vs-compute-tradeoff"]
+    },
+    {
+      "id": "impl-attention-from-scratch",
+      "type": "implementation",
+      "title": "Implementing Attention from Scratch in PyTorch",
+      "subtopic": "self-attention",
+      "concepts": ["manual-QKV-projection", "batched-matmul", "mask-application", "dropout"]
+    },
+    {
+      "id": "impl-transformer-block",
+      "type": "implementation",
+      "title": "Building a Full Transformer Block",
+      "subtopic": "encoder-decoder",
+      "concepts": ["composing-attention+norm+ffn", "residual-wiring", "parameter-counting"]
+    },
+    {
+      "id": "impl-training-loop",
+      "type": "implementation",
+      "title": "Training Loop with All Modern Tricks",
+      "subtopic": "training",
+      "concepts": ["gradient-accumulation", "mixed-precision-context", "gradient-clipping-implementation", "learning-rate-scheduler"]
+    },
+    {
+      "id": "pitfall-attention-collapse",
+      "type": "pitfall",
+      "title": "Attention Entropy Collapse",
+      "subtopic": "self-attention",
+      "concepts": ["attention-becoming-uniform-or-peaked", "entropy-monitoring", "temperature-scaling"]
+    },
+    {
+      "id": "pitfall-training-instability",
+      "type": "pitfall",
+      "title": "Training Instability at Scale",
+      "subtopic": "training",
+      "concepts": ["loss-spikes", "gradient-norm-explosion", "embedding-norm-growth", "z-loss"]
+    },
+    {
+      "id": "pitfall-position-extrapolation",
+      "type": "pitfall",
+      "title": "Length Generalization Failures",
+      "subtopic": "positional-encoding",
+      "concepts": ["out-of-distribution-positions", "attention-score-explosion", "mitigation-strategies"]
+    },
+    {
+      "id": "open-efficient-long-context",
+      "type": "open_question",
+      "title": "Efficient Long-Context Modeling",
+      "subtopic": "modern-variants",
+      "concepts": ["ring-attention", "context-parallelism", "128K+-context"]
+    },
+    {
+      "id": "open-replacing-attention",
+      "type": "open_question",
+      "title": "Are There Better Alternatives to Attention?",
+      "subtopic": "modern-variants",
+      "concepts": ["SSMs-vs-attention", "RWKV", "RetNet", "hybrid-architectures"]
+    },
+    {
+      "id": "usecase-nlp",
+      "type": "use_case",
+      "title": "NLP: Language Modeling, Translation, Summarization",
+      "subtopic": "encoder-decoder"
+    },
+    {
+      "id": "usecase-vision",
+      "type": "use_case",
+      "title": "Computer Vision: Image Classification, Object Detection",
+      "subtopic": "modern-variants"
+    },
+    {
+      "id": "usecase-multimodal",
+      "type": "use_case",
+      "title": "Multimodal: Text+Image, Text+Audio",
+      "subtopic": "modern-variants"
+    }
+  ],
+  "edges": [
+    {"from": "prereq-linear-algebra", "to": "core-attention-mechanism", "type": "prerequisite"},
+    {"from": "prereq-probability", "to": "core-attention-mechanism", "type": "prerequisite"},
+    {"from": "core-attention-mechanism", "to": "core-multi-head-attention", "type": "builds_on"},
+    {"from": "core-multi-head-attention", "to": "core-self-vs-cross-attention", "type": "builds_on"},
+    {"from": "core-attention-mechanism", "to": "core-sinusoidal-pe", "type": "motivates"},
+    {"from": "core-sinusoidal-pe", "to": "core-learned-pe", "type": "alternative"},
+    {"from": "core-sinusoidal-pe", "to": "core-rope", "type": "evolution"},
+    {"from": "core-sinusoidal-pe", "to": "core-alibi", "type": "evolution"},
+    {"from": "core-layer-norm", "to": "core-pre-vs-post-ln", "type": "builds_on"},
+    {"from": "core-layer-norm", "to": "core-rmsnorm", "type": "evolution"},
+    {"from": "prereq-neural-nets", "to": "core-ffn", "type": "prerequisite"},
+    {"from": "core-ffn", "to": "core-activations", "type": "component"},
+    {"from": "core-multi-head-attention", "to": "core-encoder-stack", "type": "component"},
+    {"from": "core-layer-norm", "to": "core-encoder-stack", "type": "component"},
+    {"from": "core-ffn", "to": "core-encoder-stack", "type": "component"},
+    {"from": "core-residual-connections", "to": "core-encoder-stack", "type": "component"},
+    {"from": "core-encoder-stack", "to": "core-decoder-stack", "type": "builds_on"},
+    {"from": "core-self-vs-cross-attention", "to": "core-decoder-stack", "type": "component"},
+    {"from": "core-encoder-stack", "to": "core-arch-variants", "type": "builds_on"},
+    {"from": "core-decoder-stack", "to": "core-arch-variants", "type": "builds_on"},
+    {"from": "core-arch-variants", "to": "core-lr-schedule", "type": "motivates"},
+    {"from": "core-lr-schedule", "to": "core-optimizers", "type": "related"},
+    {"from": "core-optimizers", "to": "core-mixed-precision", "type": "related"},
+    {"from": "core-mixed-precision", "to": "core-scaling-laws", "type": "enables"},
+    {"from": "core-multi-head-attention", "to": "advanced-sparse-attention", "type": "evolution"},
+    {"from": "core-multi-head-attention", "to": "advanced-linear-attention", "type": "evolution"},
+    {"from": "core-ffn", "to": "advanced-moe", "type": "evolution"},
+    {"from": "core-attention-mechanism", "to": "advanced-flash-attention", "type": "optimization"},
+    {"from": "core-encoder-stack", "to": "advanced-vit", "type": "adaptation"},
+    {"from": "advanced-linear-attention", "to": "advanced-ssm-hybrids", "type": "evolution"},
+    {"from": "core-multi-head-attention", "to": "impl-kv-cache", "type": "implementation"},
+    {"from": "core-attention-mechanism", "to": "impl-attention-from-scratch", "type": "implementation"},
+    {"from": "core-encoder-stack", "to": "impl-transformer-block", "type": "implementation"},
+    {"from": "core-optimizers", "to": "impl-training-loop", "type": "implementation"}
+  ],
+  "summary": {
+    "total_nodes": 43,
+    "prerequisites": {"total": 6, "satisfied": 6, "unsatisfied": 0},
+    "core_concepts": 20,
+    "advanced": 6,
+    "implementation": 4,
+    "pitfalls": 3,
+    "open_questions": 2,
+    "use_cases": 3
+  },
+  "created_at": "2026-03-23T00:00:00Z"
+}

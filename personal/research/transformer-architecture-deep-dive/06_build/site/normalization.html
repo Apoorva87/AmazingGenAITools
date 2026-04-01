@@ -1,0 +1,1358 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Normalization Techniques — Transformer Deep Dive</title>
+  <link rel="stylesheet" href="style.css" />
+  <!-- Prism.js for syntax highlighting -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css" />
+  <!-- MathJax for equations -->
+  <script>
+    window.MathJax = {
+      tex: { inlineMath: [['\\(', '\\)']], displayMath: [['\\[', '\\]']] },
+      svg: { fontCache: 'global' }
+    };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" async></script>
+</head>
+<body>
+
+<!-- ============================================================
+     TOP NAVIGATION BAR
+     ============================================================ -->
+<nav class="top-nav">
+  <div class="nav-inner">
+    <a href="index.html" class="nav-brand">Transformer Deep Dive</a>
+    <ul class="nav-links">
+      <li><a href="self-attention.html">Attention</a></li>
+      <li><a href="positional-encoding.html">Pos. Encoding</a></li>
+      <li><a href="normalization.html" class="active">Normalization</a></li>
+      <li><a href="ffn-activations.html">FFN &amp; Activations</a></li>
+      <li><a href="encoder-decoder.html">Enc-Dec</a></li>
+      <li><a href="training.html">Training</a></li>
+      <li><a href="modern-variants.html">Modern Variants</a></li>
+      <li><a href="references.html">References</a></li>
+    </ul>
+    <button class="theme-toggle" aria-label="Toggle dark/light theme">🌙</button>
+  </div>
+</nav>
+
+<!-- ============================================================
+     FLOATING SIDEBAR TABLE OF CONTENTS
+     ============================================================ -->
+<aside class="sidebar-toc">
+  <div class="toc-header">On This Page</div>
+  <ul>
+    <li><a href="#intuition">3.1 Intuition Layer</a>
+      <ul>
+        <li><a href="#why-normalize">Why Normalize?</a></li>
+        <li><a href="#covariate-shift">Covariate Shift</a></li>
+        <li><a href="#activation-vis">Activation Distributions</a></li>
+      </ul>
+    </li>
+    <li><a href="#formalism">3.2 Formalism Layer</a>
+      <ul>
+        <li><a href="#bn-vs-ln">BatchNorm vs LayerNorm</a></li>
+        <li><a href="#layernorm-math">LayerNorm Math</a></li>
+        <li><a href="#post-ln">Post-LN</a></li>
+        <li><a href="#pre-ln">Pre-LN</a></li>
+        <li><a href="#rmsnorm">RMSNorm</a></li>
+      </ul>
+    </li>
+    <li><a href="#engineering">3.3 Engineering Layer</a>
+      <ul>
+        <li><a href="#impl-layernorm">LayerNorm Code</a></li>
+        <li><a href="#impl-rmsnorm">RMSNorm Code</a></li>
+        <li><a href="#pre-post-blocks">Pre/Post-LN Blocks</a></li>
+        <li><a href="#mixed-precision">Mixed Precision</a></li>
+      </ul>
+    </li>
+    <li><a href="#going-deeper">3.4 Going Deeper</a></li>
+    <li><a href="#video">Video Resource</a></li>
+    <li><a href="#cross-links">Cross-Links</a></li>
+  </ul>
+</aside>
+
+<!-- ============================================================
+     MAIN CONTENT
+     ============================================================ -->
+<main class="content">
+
+  <header class="page-header">
+    <div class="page-number">Page 3 of 8</div>
+    <h1>Normalization Techniques</h1>
+    <p class="subtitle">
+      From BatchNorm to LayerNorm to RMSNorm — why normalization is the unsung
+      hero of stable Transformer training, and how a one-line change
+      (Pre-LN vs Post-LN) revolutionized large-scale language modeling.
+    </p>
+  </header>
+
+  <!-- ======================================================
+       SECTION 3.1 — INTUITION LAYER
+       ====================================================== -->
+  <section id="intuition" class="layer-section intuition-layer">
+    <h2><span class="layer-badge intuition">Intuition</span> 3.1 — Why Do We Need Normalization?</h2>
+
+    <!-- 3.1.1 Why Deep Networks Need Normalization -->
+    <div id="why-normalize" class="subsection">
+      <h3>3.1.1 Why Deep Networks Need Normalization</h3>
+
+      <p>
+        Imagine a signal passing through a hundred sequential layers. At each layer,
+        the signal gets multiplied by a weight matrix. If the average multiplication
+        factor is even <em>slightly</em> above 1 — say 1.01 — then after 100 layers
+        the signal magnitude is \(1.01^{100} \approx 2.7\). That seems manageable,
+        but with a factor of 1.1 it becomes \(1.1^{100} \approx 13{,}781\). Values
+        explode. Gradients follow suit, and training collapses.
+      </p>
+
+      <p>
+        The converse is equally dangerous: if the factor is 0.99, then
+        \(0.99^{100} \approx 0.366\), and with 0.9 it becomes
+        \(0.9^{100} \approx 2.66 \times 10^{-5}\). Activations shrink
+        toward zero; gradients vanish, and the network stops learning.
+      </p>
+
+      <div class="callout insight">
+        <strong>The Thermostat Analogy.</strong> Normalization acts like a thermostat
+        for your network's activations. Without it, the "temperature" of each layer
+        drifts unpredictably — sometimes searing hot (exploding), sometimes
+        freezing cold (vanishing). Normalization pins the temperature to a comfortable
+        range at every layer, ensuring the network can learn stably no matter how
+        deep it is.
+      </div>
+
+      <p>
+        In short, normalization prevents the <strong>cascading amplification</strong>
+        (or attenuation) of signals across layers by re-centering and re-scaling
+        activations to a well-defined range after each transformation step.
+      </p>
+    </div>
+
+    <!-- 3.1.2 Internal Covariate Shift -->
+    <div id="covariate-shift" class="subsection">
+      <h3>3.1.2 The Internal Covariate Shift Argument</h3>
+
+      <p>
+        When Ioffe &amp; Szegedy introduced Batch Normalization in 2015, they
+        motivated it with the concept of <strong>internal covariate shift</strong>:
+        each layer must constantly re-adapt because the distribution of its inputs
+        keeps changing as the preceding layers are updated. By normalizing inputs to
+        each layer, BN supposedly reduces this shift.
+      </p>
+
+      <p>
+        This narrative is <em>compelling but contested</em>. Santurkar et al. (2018)
+        showed that BatchNorm doesn't actually reduce covariate shift measurably.
+        Instead, they demonstrated that BatchNorm's real benefit is
+        <strong>smoothing the loss landscape</strong> — making the optimization
+        surface more Lipschitz-continuous, which allows larger learning rates and
+        faster convergence.
+      </p>
+
+      <div class="callout warning">
+        <strong>Don't get hung up on covariate shift.</strong> The original
+        motivation is likely wrong, but the technique unquestionably works.
+        The real story is about loss landscape geometry and gradient behavior.
+      </div>
+    </div>
+
+    <!-- 3.1.3 Activation Distribution Visualization -->
+    <div id="activation-vis" class="subsection">
+      <h3>3.1.3 Visual: Activation Distributions Across Layers</h3>
+
+      <p>
+        The following diagram shows activation value histograms at layers 1, 5, 10,
+        and 20 of a deep network. <span style="color:#e74c3c;font-weight:bold;">Red</span>
+        shows unnormalized activations (drifting and widening); <span style="color:#27ae60;font-weight:bold;">green</span>
+        shows normalized activations (centered and consistent).
+      </p>
+
+      <!-- SVG: Activation Distribution Histograms -->
+      <div class="figure-container">
+        <svg viewBox="0 0 800 360" xmlns="http://www.w3.org/2000/svg" class="diagram" role="img" aria-label="Activation distribution histograms comparing normalized vs unnormalized activations across layers">
+          <defs>
+            <linearGradient id="redFade" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#e74c3c" stop-opacity="0.7"/>
+              <stop offset="100%" stop-color="#e74c3c" stop-opacity="0.1"/>
+            </linearGradient>
+            <linearGradient id="greenFade" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#27ae60" stop-opacity="0.7"/>
+              <stop offset="100%" stop-color="#27ae60" stop-opacity="0.1"/>
+            </linearGradient>
+          </defs>
+
+          <!-- Title -->
+          <text x="400" y="24" text-anchor="middle" font-size="15" font-weight="bold" fill="var(--text-primary)">Activation Distributions Across Depth</text>
+
+          <!-- Layer 1 -->
+          <g transform="translate(30, 55)">
+            <text x="80" y="0" text-anchor="middle" font-size="12" font-weight="bold" fill="var(--text-primary)">Layer 1</text>
+            <!-- Unnormalized (red) — narrow bell -->
+            <path d="M20,110 Q40,100 55,70 Q65,40 80,30 Q95,40 105,70 Q120,100 140,110 Z" fill="url(#redFade)" stroke="#e74c3c" stroke-width="1.5"/>
+            <!-- Normalized (green) — similar at layer 1 -->
+            <path d="M25,110 Q45,100 60,65 Q70,35 80,25 Q90,35 100,65 Q115,100 135,110 Z" fill="url(#greenFade)" stroke="#27ae60" stroke-width="1.5" stroke-dasharray="4,3"/>
+            <!-- Axis -->
+            <line x1="10" y1="110" x2="150" y2="110" stroke="var(--text-muted)" stroke-width="1"/>
+            <text x="80" y="125" text-anchor="middle" font-size="10" fill="var(--text-muted)">value</text>
+          </g>
+
+          <!-- Layer 5 -->
+          <g transform="translate(210, 55)">
+            <text x="80" y="0" text-anchor="middle" font-size="12" font-weight="bold" fill="var(--text-primary)">Layer 5</text>
+            <!-- Unnormalized — wider, shifted right -->
+            <path d="M5,110 Q30,105 50,85 Q70,55 95,35 Q115,55 130,85 Q145,105 160,110 Z" fill="url(#redFade)" stroke="#e74c3c" stroke-width="1.5"/>
+            <!-- Normalized — still centered -->
+            <path d="M25,110 Q45,100 60,65 Q70,35 80,25 Q90,35 100,65 Q115,100 135,110 Z" fill="url(#greenFade)" stroke="#27ae60" stroke-width="1.5" stroke-dasharray="4,3"/>
+            <line x1="0" y1="110" x2="165" y2="110" stroke="var(--text-muted)" stroke-width="1"/>
+            <text x="80" y="125" text-anchor="middle" font-size="10" fill="var(--text-muted)">value</text>
+          </g>
+
+          <!-- Layer 10 -->
+          <g transform="translate(400, 55)">
+            <text x="80" y="0" text-anchor="middle" font-size="12" font-weight="bold" fill="var(--text-primary)">Layer 10</text>
+            <!-- Unnormalized — very wide, flat, shifted -->
+            <path d="M-10,110 Q10,108 30,100 Q60,80 110,50 Q140,80 155,100 Q165,108 175,110 Z" fill="url(#redFade)" stroke="#e74c3c" stroke-width="1.5"/>
+            <!-- Normalized — consistent -->
+            <path d="M25,110 Q45,100 60,65 Q70,35 80,25 Q90,35 100,65 Q115,100 135,110 Z" fill="url(#greenFade)" stroke="#27ae60" stroke-width="1.5" stroke-dasharray="4,3"/>
+            <line x1="-15" y1="110" x2="180" y2="110" stroke="var(--text-muted)" stroke-width="1"/>
+            <text x="80" y="125" text-anchor="middle" font-size="10" fill="var(--text-muted)">value</text>
+          </g>
+
+          <!-- Layer 20 -->
+          <g transform="translate(600, 55)">
+            <text x="80" y="0" text-anchor="middle" font-size="12" font-weight="bold" fill="var(--text-primary)">Layer 20</text>
+            <!-- Unnormalized — extremely wide, nearly flat -->
+            <path d="M-25,110 Q0,108 20,104 Q50,95 120,65 Q150,95 165,104 Q180,108 190,110 Z" fill="url(#redFade)" stroke="#e74c3c" stroke-width="1.5"/>
+            <!-- Normalized — still the same shape -->
+            <path d="M25,110 Q45,100 60,65 Q70,35 80,25 Q90,35 100,65 Q115,100 135,110 Z" fill="url(#greenFade)" stroke="#27ae60" stroke-width="1.5" stroke-dasharray="4,3"/>
+            <line x1="-30" y1="110" x2="195" y2="110" stroke="var(--text-muted)" stroke-width="1"/>
+            <text x="80" y="125" text-anchor="middle" font-size="10" fill="var(--text-muted)">value</text>
+          </g>
+
+          <!-- Legend -->
+          <g transform="translate(250, 210)">
+            <rect x="0" y="0" width="300" height="50" rx="8" fill="var(--bg-secondary)" stroke="var(--border-color)" stroke-width="1"/>
+            <line x1="20" y1="18" x2="50" y2="18" stroke="#e74c3c" stroke-width="2.5"/>
+            <text x="58" y="22" font-size="12" fill="var(--text-primary)">Without normalization</text>
+            <line x1="20" y1="38" x2="50" y2="38" stroke="#27ae60" stroke-width="2.5" stroke-dasharray="4,3"/>
+            <text x="58" y="42" font-size="12" fill="var(--text-primary)">With normalization</text>
+          </g>
+        </svg>
+        <div class="figure-caption">
+          <strong>Figure 3.1.</strong> Without normalization, activation distributions
+          drift and widen across layers (red). Normalization keeps distributions
+          centered and consistent (green), regardless of depth.
+        </div>
+      </div>
+    </div>
+  </section>
+
+
+  <!-- ======================================================
+       SECTION 3.2 — FORMALISM LAYER
+       ====================================================== -->
+  <section id="formalism" class="layer-section formalism-layer">
+    <h2><span class="layer-badge formalism">Formalism</span> 3.2 — The Mathematics of Normalization</h2>
+
+    <!-- 3.2.1 Batch Normalization vs Layer Normalization -->
+    <div id="bn-vs-ln" class="subsection">
+      <h3>3.2.1 Batch Normalization vs Layer Normalization</h3>
+
+      <p>
+        The fundamental difference between normalization techniques comes down to
+        <em>which dimensions you compute statistics over</em>. Consider a typical
+        Transformer input tensor with shape
+        <code>(batch, seq_len, d_model)</code> — three axes, three possible
+        normalization strategies.
+      </p>
+
+      <!-- SVG: 3D Tensor Diagram — BN vs LN -->
+      <div class="figure-container">
+        <svg viewBox="0 0 820 400" xmlns="http://www.w3.org/2000/svg" class="diagram" role="img" aria-label="3D tensor diagram showing BatchNorm vs LayerNorm normalization dimensions">
+          <!-- BatchNorm Side -->
+          <text x="200" y="28" text-anchor="middle" font-size="16" font-weight="bold" fill="var(--text-primary)">Batch Normalization</text>
+          <text x="200" y="48" text-anchor="middle" font-size="11" fill="var(--text-secondary)">Normalize across batch + seq_len (blue planes)</text>
+
+          <!-- 3D cube for BN -->
+          <g transform="translate(60, 70)">
+            <!-- Back face -->
+            <polygon points="60,0 280,0 280,180 60,180" fill="none" stroke="var(--border-color)" stroke-width="1" stroke-dasharray="4,3"/>
+            <!-- Bottom face -->
+            <polygon points="0,220 60,180 280,180 220,220" fill="none" stroke="var(--border-color)" stroke-width="1"/>
+            <!-- Left face -->
+            <polygon points="0,40 60,0 60,180 0,220" fill="none" stroke="var(--border-color)" stroke-width="1"/>
+            <!-- Right face -->
+            <polygon points="280,0 280,180 220,220 220,40" fill="none" stroke="var(--border-color)" stroke-width="1"/>
+            <!-- Top face -->
+            <polygon points="0,40 60,0 280,0 220,40" fill="none" stroke="var(--border-color)" stroke-width="1"/>
+            <!-- Front face -->
+            <polygon points="0,40 220,40 220,220 0,220" fill="none" stroke="var(--text-muted)" stroke-width="1.5"/>
+
+            <!-- BN shading: blue vertical slices (across batch & seq for each feature) -->
+            <rect x="20" y="40" width="12" height="180" fill="#4A90D9" fill-opacity="0.25" stroke="#4A90D9" stroke-width="0.5"/>
+            <rect x="56" y="40" width="12" height="180" fill="#4A90D9" fill-opacity="0.25" stroke="#4A90D9" stroke-width="0.5"/>
+            <rect x="92" y="40" width="12" height="180" fill="#4A90D9" fill-opacity="0.35" stroke="#4A90D9" stroke-width="1"/>
+            <rect x="128" y="40" width="12" height="180" fill="#4A90D9" fill-opacity="0.25" stroke="#4A90D9" stroke-width="0.5"/>
+            <rect x="164" y="40" width="12" height="180" fill="#4A90D9" fill-opacity="0.25" stroke="#4A90D9" stroke-width="0.5"/>
+            <rect x="200" y="40" width="12" height="180" fill="#4A90D9" fill-opacity="0.25" stroke="#4A90D9" stroke-width="0.5"/>
+
+            <!-- Axis labels -->
+            <text x="110" y="245" text-anchor="middle" font-size="12" font-weight="bold" fill="var(--text-primary)">d_model (features)</text>
+            <text x="-15" y="135" text-anchor="middle" font-size="11" fill="var(--text-secondary)" transform="rotate(-90, -15, 135)">batch x seq_len</text>
+
+            <!-- Highlighted arrow showing normalization direction -->
+            <line x1="98" y1="40" x2="98" y2="220" stroke="#4A90D9" stroke-width="2.5" marker-end="url(#arrowBlue)"/>
+          </g>
+
+          <!-- LayerNorm Side -->
+          <text x="620" y="28" text-anchor="middle" font-size="16" font-weight="bold" fill="var(--text-primary)">Layer Normalization</text>
+          <text x="620" y="48" text-anchor="middle" font-size="11" fill="var(--text-secondary)">Normalize across d_model only (green rows)</text>
+
+          <!-- 3D cube for LN -->
+          <g transform="translate(480, 70)">
+            <!-- Back face -->
+            <polygon points="60,0 280,0 280,180 60,180" fill="none" stroke="var(--border-color)" stroke-width="1" stroke-dasharray="4,3"/>
+            <!-- Bottom face -->
+            <polygon points="0,220 60,180 280,180 220,220" fill="none" stroke="var(--border-color)" stroke-width="1"/>
+            <!-- Left face -->
+            <polygon points="0,40 60,0 60,180 0,220" fill="none" stroke="var(--border-color)" stroke-width="1"/>
+            <!-- Right face -->
+            <polygon points="280,0 280,180 220,220 220,40" fill="none" stroke="var(--border-color)" stroke-width="1"/>
+            <!-- Top face -->
+            <polygon points="0,40 60,0 280,0 220,40" fill="none" stroke="var(--border-color)" stroke-width="1"/>
+            <!-- Front face -->
+            <polygon points="0,40 220,40 220,220 0,220" fill="none" stroke="var(--text-muted)" stroke-width="1.5"/>
+
+            <!-- LN shading: green horizontal slices (across features for each position) -->
+            <rect x="0" y="50" width="220" height="12" fill="#27ae60" fill-opacity="0.25" stroke="#27ae60" stroke-width="0.5"/>
+            <rect x="0" y="78" width="220" height="12" fill="#27ae60" fill-opacity="0.25" stroke="#27ae60" stroke-width="0.5"/>
+            <rect x="0" y="106" width="220" height="12" fill="#27ae60" fill-opacity="0.35" stroke="#27ae60" stroke-width="1"/>
+            <rect x="0" y="134" width="220" height="12" fill="#27ae60" fill-opacity="0.25" stroke="#27ae60" stroke-width="0.5"/>
+            <rect x="0" y="162" width="220" height="12" fill="#27ae60" fill-opacity="0.25" stroke="#27ae60" stroke-width="0.5"/>
+            <rect x="0" y="190" width="220" height="12" fill="#27ae60" fill-opacity="0.25" stroke="#27ae60" stroke-width="0.5"/>
+
+            <!-- Axis labels -->
+            <text x="110" y="245" text-anchor="middle" font-size="12" font-weight="bold" fill="var(--text-primary)">d_model (features)</text>
+            <text x="-15" y="135" text-anchor="middle" font-size="11" fill="var(--text-secondary)" transform="rotate(-90, -15, 135)">batch x seq_len</text>
+
+            <!-- Highlighted arrow showing normalization direction -->
+            <line x1="0" y1="112" x2="220" y2="112" stroke="#27ae60" stroke-width="2.5" marker-end="url(#arrowGreen)"/>
+          </g>
+
+          <!-- Arrow markers -->
+          <defs>
+            <marker id="arrowBlue" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0,0 8,3 0,6" fill="#4A90D9"/>
+            </marker>
+            <marker id="arrowGreen" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0,0 8,3 0,6" fill="#27ae60"/>
+            </marker>
+          </defs>
+
+          <!-- Summary annotation -->
+          <g transform="translate(60, 320)">
+            <rect x="0" y="0" width="700" height="55" rx="8" fill="var(--bg-secondary)" stroke="var(--border-color)"/>
+            <text x="350" y="22" text-anchor="middle" font-size="12" fill="var(--text-primary)">
+              <tspan font-weight="bold" fill="#4A90D9">BatchNorm</tspan>: one mean/var per feature, computed over all examples.
+            </text>
+            <text x="350" y="42" text-anchor="middle" font-size="12" fill="var(--text-primary)">
+              <tspan font-weight="bold" fill="#27ae60">LayerNorm</tspan>: one mean/var per example, computed over all features.
+            </text>
+          </g>
+        </svg>
+        <div class="figure-caption">
+          <strong>Figure 3.2.</strong> Given tensor shape (batch, seq_len, d_model):
+          BatchNorm computes statistics across the batch+sequence axes (vertical blue slices),
+          while LayerNorm computes across the feature axis (horizontal green rows).
+        </div>
+      </div>
+
+      <h4>Why BatchNorm Fails for Sequences</h4>
+
+      <p>
+        BatchNorm was designed for convolutional networks with fixed spatial
+        dimensions. In NLP and Transformer models, it breaks down for three
+        critical reasons:
+      </p>
+
+      <ol>
+        <li>
+          <strong>Variable-length sequences.</strong> Positions beyond the length
+          of shorter sequences in the batch are padding tokens. Computing batch
+          statistics over these positions produces meaningless numbers.
+        </li>
+        <li>
+          <strong>Train-vs-inference mismatch.</strong> BatchNorm maintains running
+          statistics during training but uses fixed statistics at inference. For
+          sequences, these running statistics are unreliable because the batch
+          composition varies wildly.
+        </li>
+        <li>
+          <strong>Batch dependency.</strong> Each example's normalization depends on
+          what other examples are in the batch. This is undesirable: the
+          representation of "The cat sat" shouldn't change depending on whether
+          the other sentences in the batch are about cats or about astrophysics.
+        </li>
+      </ol>
+
+      <p>
+        <strong>LayerNorm solves all three problems</strong> by normalizing each
+        individual token's feature vector independently — no dependence on other
+        examples, no train/inference discrepancy, no issues with variable lengths.
+      </p>
+
+      <!-- Comparison Table -->
+      <div class="table-container">
+        <table class="comparison-table">
+          <thead>
+            <tr>
+              <th>Property</th>
+              <th>Batch Normalization</th>
+              <th>Layer Normalization</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Normalization axis</td>
+              <td>Batch + spatial/sequence</td>
+              <td>Feature dimension only</td>
+            </tr>
+            <tr>
+              <td>Statistics per</td>
+              <td>Per feature channel</td>
+              <td>Per example (per token)</td>
+            </tr>
+            <tr>
+              <td>Batch dependency</td>
+              <td>Yes — requires large batches</td>
+              <td>No — fully independent</td>
+            </tr>
+            <tr>
+              <td>Train/inference difference</td>
+              <td>Yes — running statistics at inference</td>
+              <td>No — identical at train and inference</td>
+            </tr>
+            <tr>
+              <td>Variable-length sequences</td>
+              <td>Problematic (padding)</td>
+              <td>No issue</td>
+            </tr>
+            <tr>
+              <td>Primary domain</td>
+              <td>CNNs (vision)</td>
+              <td>Transformers (NLP, vision, etc.)</td>
+            </tr>
+            <tr>
+              <td>Learnable params</td>
+              <td>\(\gamma, \beta\) per feature</td>
+              <td>\(\gamma, \beta\) per feature</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 3.2.2 LayerNorm Math -->
+    <div id="layernorm-math" class="subsection">
+      <h3>3.2.2 Layer Normalization: Math and Properties</h3>
+
+      <p>
+        Given an input vector \(\mathbf{x} \in \mathbb{R}^{d_{\text{model}}}\)
+        representing a single token, LayerNorm computes:
+      </p>
+
+      <div class="math-block">
+        \[
+        \mu = \frac{1}{d} \sum_{i=1}^{d} x_i
+        \]
+      </div>
+
+      <div class="math-block">
+        \[
+        \sigma = \sqrt{\frac{1}{d} \sum_{i=1}^{d} (x_i - \mu)^2}
+        \]
+      </div>
+
+      <div class="math-block">
+        \[
+        \text{LayerNorm}(\mathbf{x}) = \boldsymbol{\gamma} \odot \frac{\mathbf{x} - \mu}{\sigma + \epsilon} + \boldsymbol{\beta}
+        \]
+      </div>
+
+      <p>
+        where:
+      </p>
+      <ul>
+        <li>
+          \(\mu\) is the mean of the feature vector (a scalar, computed per token)
+        </li>
+        <li>
+          \(\sigma\) is the standard deviation of the feature vector (a scalar, per token)
+        </li>
+        <li>
+          \(\boldsymbol{\gamma} \in \mathbb{R}^{d}\) is a learnable <strong>scale</strong> parameter (initialized to ones)
+        </li>
+        <li>
+          \(\boldsymbol{\beta} \in \mathbb{R}^{d}\) is a learnable <strong>shift</strong> parameter (initialized to zeros)
+        </li>
+        <li>
+          \(\odot\) denotes element-wise (Hadamard) multiplication
+        </li>
+        <li>
+          \(\epsilon\) is a small constant (typically \(10^{-6}\)) for numerical stability
+        </li>
+      </ul>
+
+      <div class="callout insight">
+        <strong>Key intuition:</strong> The bare normalization
+        \((\mathbf{x} - \mu)/\sigma\) forces every token to have mean 0 and
+        variance 1. The learnable \(\gamma\) and \(\beta\) let the network
+        <em>undo</em> this constraint where useful — giving the model the option
+        of normalization without mandating any particular output distribution.
+      </div>
+
+      <p>
+        Critically, all statistics are computed <strong>within a single token's
+        feature vector</strong>. Token at position 5 is normalized using only
+        its own 512 (or 768, or 4096) feature values — completely independent
+        of all other tokens and all other examples in the batch.
+      </p>
+    </div>
+
+    <!-- 3.2.3 Post-LN -->
+    <div id="post-ln" class="subsection">
+      <h3>3.2.3 Post-LN: The Original Transformer Placement</h3>
+
+      <p>
+        In the original "Attention Is All You Need" paper (Vaswani et al., 2017),
+        LayerNorm is placed <strong>after</strong> the residual addition:
+      </p>
+
+      <div class="math-block">
+        \[
+        \text{output} = \text{LayerNorm}\!\left(\mathbf{x} + \text{Sublayer}(\mathbf{x})\right)
+        \]
+      </div>
+
+      <p>
+        This is called <strong>Post-LN</strong> because normalization happens
+        <em>post</em> residual connection. Let's visualize the block structure:
+      </p>
+
+      <!-- SVG: Post-LN vs Pre-LN Architecture Diagrams -->
+      <div class="figure-container">
+        <svg viewBox="0 0 800 480" xmlns="http://www.w3.org/2000/svg" class="diagram" role="img" aria-label="Post-LN vs Pre-LN transformer block architecture comparison">
+          <!-- POST-LN BLOCK -->
+          <text x="190" y="25" text-anchor="middle" font-size="16" font-weight="bold" fill="var(--text-primary)">Post-LN (Original)</text>
+
+          <g transform="translate(70, 40)">
+            <!-- Input -->
+            <rect x="80" y="0" width="160" height="32" rx="4" fill="var(--bg-secondary)" stroke="var(--border-color)" stroke-width="1.5"/>
+            <text x="160" y="21" text-anchor="middle" font-size="12" fill="var(--text-primary)">Input x</text>
+
+            <!-- Arrow down -->
+            <line x1="160" y1="32" x2="160" y2="56" stroke="var(--text-muted)" stroke-width="1.5" marker-end="url(#arrowGray)"/>
+
+            <!-- Sublayer (Attention / FFN) -->
+            <rect x="80" y="56" width="160" height="36" rx="6" fill="var(--color-attention-bg)" stroke="var(--color-attention)" stroke-width="2"/>
+            <text x="160" y="79" text-anchor="middle" font-size="12" font-weight="bold" fill="var(--color-attention)">Sublayer(x)</text>
+
+            <!-- Arrow down -->
+            <line x1="160" y1="92" x2="160" y2="116" stroke="var(--text-muted)" stroke-width="1.5" marker-end="url(#arrowGray)"/>
+
+            <!-- Add (residual) -->
+            <circle cx="160" cy="132" r="16" fill="var(--bg-primary)" stroke="var(--text-muted)" stroke-width="1.5"/>
+            <text x="160" y="137" text-anchor="middle" font-size="16" font-weight="bold" fill="var(--text-primary)">+</text>
+
+            <!-- Residual connection from input -->
+            <line x1="50" y1="16" x2="50" y2="132" stroke="var(--text-muted)" stroke-width="1.5" stroke-dasharray="5,3"/>
+            <line x1="50" y1="132" x2="144" y2="132" stroke="var(--text-muted)" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrowGray)"/>
+
+            <!-- Arrow down -->
+            <line x1="160" y1="148" x2="160" y2="172" stroke="var(--text-muted)" stroke-width="1.5" marker-end="url(#arrowGray)"/>
+
+            <!-- LayerNorm -->
+            <rect x="80" y="172" width="160" height="36" rx="6" fill="var(--color-norm-bg)" stroke="var(--color-norm)" stroke-width="2"/>
+            <text x="160" y="195" text-anchor="middle" font-size="12" font-weight="bold" fill="var(--color-norm)">LayerNorm</text>
+
+            <!-- Arrow down -->
+            <line x1="160" y1="208" x2="160" y2="232" stroke="var(--text-muted)" stroke-width="1.5" marker-end="url(#arrowGray)"/>
+
+            <!-- Output -->
+            <rect x="80" y="232" width="160" height="32" rx="4" fill="var(--bg-secondary)" stroke="var(--border-color)" stroke-width="1.5"/>
+            <text x="160" y="253" text-anchor="middle" font-size="12" fill="var(--text-primary)">Output</text>
+
+            <!-- Formula -->
+            <text x="160" y="290" text-anchor="middle" font-size="11" fill="var(--text-secondary)" font-style="italic">LN(x + Sublayer(x))</text>
+          </g>
+
+          <!-- PRE-LN BLOCK -->
+          <text x="600" y="25" text-anchor="middle" font-size="16" font-weight="bold" fill="var(--text-primary)">Pre-LN (Modern)</text>
+
+          <g transform="translate(480, 40)">
+            <!-- Input -->
+            <rect x="80" y="0" width="160" height="32" rx="4" fill="var(--bg-secondary)" stroke="var(--border-color)" stroke-width="1.5"/>
+            <text x="160" y="21" text-anchor="middle" font-size="12" fill="var(--text-primary)">Input x</text>
+
+            <!-- Arrow down -->
+            <line x1="160" y1="32" x2="160" y2="56" stroke="var(--text-muted)" stroke-width="1.5" marker-end="url(#arrowGray)"/>
+
+            <!-- LayerNorm FIRST -->
+            <rect x="80" y="56" width="160" height="36" rx="6" fill="var(--color-norm-bg)" stroke="var(--color-norm)" stroke-width="2"/>
+            <text x="160" y="79" text-anchor="middle" font-size="12" font-weight="bold" fill="var(--color-norm)">LayerNorm</text>
+
+            <!-- Arrow down -->
+            <line x1="160" y1="92" x2="160" y2="116" stroke="var(--text-muted)" stroke-width="1.5" marker-end="url(#arrowGray)"/>
+
+            <!-- Sublayer -->
+            <rect x="80" y="116" width="160" height="36" rx="6" fill="var(--color-attention-bg)" stroke="var(--color-attention)" stroke-width="2"/>
+            <text x="160" y="139" text-anchor="middle" font-size="12" font-weight="bold" fill="var(--color-attention)">Sublayer(LN(x))</text>
+
+            <!-- Arrow down -->
+            <line x1="160" y1="152" x2="160" y2="176" stroke="var(--text-muted)" stroke-width="1.5" marker-end="url(#arrowGray)"/>
+
+            <!-- Add (residual) -->
+            <circle cx="160" cy="192" r="16" fill="var(--bg-primary)" stroke="var(--text-muted)" stroke-width="1.5"/>
+            <text x="160" y="197" text-anchor="middle" font-size="16" font-weight="bold" fill="var(--text-primary)">+</text>
+
+            <!-- Residual connection from input (clean path!) -->
+            <line x1="50" y1="16" x2="50" y2="192" stroke="#27ae60" stroke-width="2.5" stroke-dasharray="5,3"/>
+            <line x1="50" y1="192" x2="144" y2="192" stroke="#27ae60" stroke-width="2.5" stroke-dasharray="5,3" marker-end="url(#arrowGreen2)"/>
+            <text x="35" y="110" text-anchor="middle" font-size="9" fill="#27ae60" font-weight="bold" transform="rotate(-90, 35, 110)">clean residual</text>
+
+            <!-- Arrow down -->
+            <line x1="160" y1="208" x2="160" y2="232" stroke="var(--text-muted)" stroke-width="1.5" marker-end="url(#arrowGray)"/>
+
+            <!-- Output -->
+            <rect x="80" y="232" width="160" height="32" rx="4" fill="var(--bg-secondary)" stroke="var(--border-color)" stroke-width="1.5"/>
+            <text x="160" y="253" text-anchor="middle" font-size="12" fill="var(--text-primary)">Output</text>
+
+            <!-- Formula -->
+            <text x="160" y="290" text-anchor="middle" font-size="11" fill="var(--text-secondary)" font-style="italic">x + Sublayer(LN(x))</text>
+          </g>
+
+          <!-- Arrow markers -->
+          <defs>
+            <marker id="arrowGray" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0,0 8,3 0,6" fill="var(--text-muted)"/>
+            </marker>
+            <marker id="arrowGreen2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0,0 8,3 0,6" fill="#27ae60"/>
+            </marker>
+          </defs>
+
+          <!-- Gradient magnitude comparison -->
+          <text x="400" y="370" text-anchor="middle" font-size="14" font-weight="bold" fill="var(--text-primary)">Gradient Magnitude Across Layers (at Initialization)</text>
+
+          <g transform="translate(80, 385)">
+            <!-- Y axis -->
+            <line x1="40" y1="0" x2="40" y2="70" stroke="var(--text-muted)" stroke-width="1"/>
+            <text x="15" y="10" font-size="9" fill="var(--text-muted)">high</text>
+            <text x="15" y="68" font-size="9" fill="var(--text-muted)">low</text>
+            <text x="7" y="40" font-size="9" fill="var(--text-secondary)" transform="rotate(-90,7,40)">|grad|</text>
+
+            <!-- X axis -->
+            <line x1="40" y1="70" x2="660" y2="70" stroke="var(--text-muted)" stroke-width="1"/>
+            <text x="350" y="88" text-anchor="middle" font-size="10" fill="var(--text-secondary)">Layer depth (1 to L)</text>
+
+            <!-- Post-LN gradient (erratic, large variance) -->
+            <polyline points="40,55 100,15 160,60 220,5 280,50 340,10 400,55 460,8 520,48 580,12 640,52"
+                      fill="none" stroke="#e74c3c" stroke-width="2" stroke-linejoin="round"/>
+
+            <!-- Pre-LN gradient (stable, roughly constant) -->
+            <polyline points="40,38 100,40 160,37 220,39 280,38 340,40 400,37 460,39 520,38 580,40 640,38"
+                      fill="none" stroke="#27ae60" stroke-width="2.5" stroke-linejoin="round"/>
+
+            <!-- Legend -->
+            <line x1="440" y1="0" x2="470" y2="0" stroke="#e74c3c" stroke-width="2"/>
+            <text x="478" y="4" font-size="10" fill="var(--text-primary)">Post-LN (unstable)</text>
+            <line x1="440" y1="14" x2="470" y2="14" stroke="#27ae60" stroke-width="2.5"/>
+            <text x="478" y="18" font-size="10" fill="var(--text-primary)">Pre-LN (stable)</text>
+          </g>
+        </svg>
+        <div class="figure-caption">
+          <strong>Figure 3.3.</strong> Post-LN places LayerNorm <em>after</em> the residual addition;
+          Pre-LN places it <em>before</em> the sublayer. The gradient magnitude plot (bottom)
+          shows Pre-LN produces well-bounded gradients, while Post-LN gradients vary wildly
+          (Xiong et al., 2020).
+        </div>
+      </div>
+
+      <h4>The Post-LN Gradient Problem</h4>
+
+      <p>
+        Xiong et al. (2020) — "On Layer Normalization in the Transformer Architecture"
+        — provided a rigorous analysis showing that Post-LN has problematic gradient
+        behavior at initialization:
+      </p>
+
+      <ul>
+        <li>Gradients at early layers can be <strong>orders of magnitude larger</strong> than gradients at later layers</li>
+        <li>This imbalance means early layers get disproportionately large updates, potentially causing divergence</li>
+        <li>A <strong>learning rate warmup</strong> is essential: start with a tiny learning rate and gradually increase it, allowing the model to reach a more stable region before taking large steps</li>
+        <li>Without warmup, Post-LN training frequently diverges entirely</li>
+      </ul>
+    </div>
+
+    <!-- 3.2.4 Pre-LN -->
+    <div id="pre-ln" class="subsection">
+      <h3>3.2.4 Pre-LN: The Modern Standard</h3>
+
+      <p>
+        Pre-LN moves LayerNorm to <strong>before</strong> the sublayer:
+      </p>
+
+      <div class="math-block">
+        \[
+        \text{output} = \mathbf{x} + \text{Sublayer}\!\left(\text{LayerNorm}(\mathbf{x})\right)
+        \]
+      </div>
+
+      <p>
+        This seemingly trivial rearrangement has a profound consequence for gradient flow.
+        Consider what happens when we compute the gradient of the loss with respect to
+        an input at layer \(\ell\):
+      </p>
+
+      <div class="math-block">
+        \[
+        \frac{\partial \mathcal{L}}{\partial \mathbf{x}_\ell}
+        = \frac{\partial \mathcal{L}}{\partial \mathbf{x}_L}
+        \prod_{k=\ell}^{L-1} \left(\mathbf{I} + \frac{\partial\, \text{Sublayer}_k(\text{LN}(\mathbf{x}_k))}{\partial \mathbf{x}_k}\right)
+        \]
+      </div>
+
+      <p>
+        The <strong>identity matrix \(\mathbf{I}\)</strong> in each factor ensures
+        that the gradient always has a direct path — the residual connection acts
+        as a "gradient highway" that is <em>not</em> gated by any normalization.
+        In Post-LN, the LayerNorm sits in this path and can distort the gradient.
+      </p>
+
+      <div class="callout key-insight">
+        <strong>This simple change — moving LayerNorm before the sublayer instead
+        of after — was one of the most impactful practical improvements to the
+        Transformer architecture.</strong> It enabled training deep Transformers
+        (48+ layers) without careful learning rate warmup schedules and opened
+        the door to the massive models we see today.
+      </div>
+
+      <h4>Properties of Pre-LN</h4>
+      <ul>
+        <li><strong>Well-bounded gradients at initialization</strong> — Xiong et al. proved this formally</li>
+        <li><strong>No warmup needed</strong> — training can begin with the full learning rate</li>
+        <li><strong>Clean residual path</strong> — the residual stream is an unobstructed identity mapping</li>
+        <li><strong>Easier to scale</strong> — deeper models train more reliably</li>
+      </ul>
+
+      <h4>Where Pre-LN is Used</h4>
+      <p>
+        Pre-LN is the standard in virtually all modern large language models:
+      </p>
+      <ul>
+        <li><strong>GPT-2</strong> (Radford et al., 2019) — first major model to adopt Pre-LN</li>
+        <li><strong>GPT-3</strong> (Brown et al., 2020)</li>
+        <li><strong>LLaMA</strong> (Touvron et al., 2023) and LLaMA 2/3</li>
+        <li><strong>PaLM</strong> (Chowdhery et al., 2022)</li>
+        <li><strong>Mistral</strong>, <strong>Gemma</strong>, and essentially all open-weight LLMs</li>
+      </ul>
+
+      <h4>The Trade-Off</h4>
+      <p>
+        There is some evidence (Liu et al., 2020) that Post-LN can achieve
+        <strong>slightly better final loss</strong> than Pre-LN when trained
+        successfully. The hypothesis is that normalization after the residual
+        provides a stronger regularization effect. However, the training
+        difficulty of Post-LN makes this advantage impractical for most
+        settings, especially at scale.
+      </p>
+    </div>
+
+    <!-- 3.2.5 RMSNorm -->
+    <div id="rmsnorm" class="subsection">
+      <h3>3.2.5 RMSNorm: Dropping the Mean</h3>
+
+      <p>
+        Zhang &amp; Sennrich (2019) observed that the mean-centering step in
+        LayerNorm may be <strong>redundant</strong>. Their insight: the
+        re-centering (\(x - \mu\)) and the re-scaling (\(/\sigma\)) serve
+        partially overlapping roles. What if we just normalize by the
+        root-mean-square of the values?
+      </p>
+
+      <div class="math-block">
+        \[
+        \text{RMS}(\mathbf{x}) = \sqrt{\frac{1}{d}\sum_{i=1}^{d} x_i^2}
+        \]
+      </div>
+
+      <div class="math-block">
+        \[
+        \text{RMSNorm}(\mathbf{x}) = \boldsymbol{\gamma} \odot \frac{\mathbf{x}}{\text{RMS}(\mathbf{x}) + \epsilon}
+        \]
+      </div>
+
+      <p>
+        Compared to LayerNorm:
+      </p>
+
+      <ul>
+        <li><strong>No mean subtraction</strong> — we skip computing \(\mu\) entirely</li>
+        <li><strong>No shift parameter \(\beta\)</strong> — only the scale \(\gamma\) remains</li>
+        <li><strong>~10-15% faster</strong> than LayerNorm due to fewer operations</li>
+        <li><strong>Fewer parameters</strong> — \(d\) instead of \(2d\) learnable values per norm layer</li>
+      </ul>
+
+      <p>
+        The empirical result from Zhang &amp; Sennrich: RMSNorm performs
+        <strong>equally well</strong> as LayerNorm across a variety of tasks,
+        while being computationally cheaper. This is a pure win when training
+        billion-parameter models where every saved FLOP matters.
+      </p>
+
+      <div class="callout insight">
+        <strong>Why does dropping the mean work?</strong> One hypothesis: after
+        many layers of learned transformations, the mean of feature vectors
+        carries relatively little useful information compared to the magnitudes.
+        The scale normalization alone is sufficient to keep activations
+        well-behaved.
+      </div>
+
+      <h4>RMSNorm in Production</h4>
+      <p>
+        RMSNorm has become the default in the latest generation of LLMs:
+      </p>
+      <ul>
+        <li><strong>LLaMA</strong> and <strong>LLaMA 2/3</strong> (Meta)</li>
+        <li><strong>Gemma</strong> (Google DeepMind)</li>
+        <li><strong>Mistral</strong> and <strong>Mixtral</strong></li>
+        <li><strong>Qwen</strong> (Alibaba)</li>
+      </ul>
+    </div>
+  </section>
+
+
+  <!-- ======================================================
+       SECTION 3.3 — ENGINEERING LAYER
+       ====================================================== -->
+  <section id="engineering" class="layer-section engineering-layer">
+    <h2><span class="layer-badge engineering">Engineering</span> 3.3 — Implementations</h2>
+
+    <!-- 3.3.1 LayerNorm from Scratch -->
+    <div id="impl-layernorm" class="subsection">
+      <h3>3.3.1 Implementing LayerNorm from Scratch</h3>
+
+      <p>
+        A clean, readable implementation that matches PyTorch's
+        <code>nn.LayerNorm</code> behavior. The key is normalizing over the
+        <strong>last dimension</strong> (<code>dim=-1</code>), which is the
+        feature/embedding dimension.
+      </p>
+
+      <pre><code class="language-python">import torch
+import torch.nn as nn
+
+
+class LayerNorm(nn.Module):
+    """Layer Normalization (Ba et al., 2016).
+
+    Normalizes each token's feature vector to have zero mean and unit
+    variance, then applies a learnable affine transformation.
+
+    Args:
+        d_model: Dimension of the feature vector (e.g., 512, 768, 4096).
+        eps: Small constant for numerical stability. Default: 1e-6.
+    """
+
+    def __init__(self, d_model: int, eps: float = 1e-6):
+        super().__init__()
+        self.gamma = nn.Parameter(torch.ones(d_model))   # scale
+        self.beta = nn.Parameter(torch.zeros(d_model))    # shift
+        self.eps = eps
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: Input tensor of shape (..., d_model).
+        Returns:
+            Normalized tensor of the same shape.
+        """
+        # Compute mean and std over the last (feature) dimension
+        mean = x.mean(dim=-1, keepdim=True)          # (..., 1)
+        std = x.std(dim=-1, keepdim=True)             # (..., 1)
+
+        # Normalize, then scale and shift
+        x_norm = (x - mean) / (std + self.eps)        # (..., d_model)
+        return self.gamma * x_norm + self.beta         # (..., d_model)
+
+
+# --- Quick test ---
+if __name__ == "__main__":
+    ln = LayerNorm(d_model=512)
+    x = torch.randn(2, 10, 512)   # (batch=2, seq_len=10, d_model=512)
+    out = ln(x)
+    print(f"Input shape:  {x.shape}")
+    print(f"Output shape: {out.shape}")
+    # Verify: each token should have ~0 mean and ~1 std after normalization
+    normed = (x - x.mean(-1, keepdim=True)) / (x.std(-1, keepdim=True) + 1e-6)
+    print(f"Post-norm mean: {normed.mean(-1)[0, 0]:.6f}")   # ~0
+    print(f"Post-norm std:  {normed.std(-1)[0, 0]:.6f}")    # ~1</code></pre>
+    </div>
+
+    <!-- 3.3.2 RMSNorm from Scratch -->
+    <div id="impl-rmsnorm" class="subsection">
+      <h3>3.3.2 Implementing RMSNorm from Scratch</h3>
+
+      <p>
+        RMSNorm is even simpler: no mean computation, no shift parameter.
+        Note the difference — we compute the root-mean-square directly from
+        \(x^2\) rather than from \((x - \mu)^2\).
+      </p>
+
+      <pre><code class="language-python">class RMSNorm(nn.Module):
+    """Root Mean Square Layer Normalization (Zhang & Sennrich, 2019).
+
+    Like LayerNorm but without mean-centering. Normalizes by the RMS of
+    the input and applies a learnable scale. Faster and equally effective.
+
+    Args:
+        d_model: Dimension of the feature vector.
+        eps: Small constant for numerical stability. Default: 1e-6.
+    """
+
+    def __init__(self, d_model: int, eps: float = 1e-6):
+        super().__init__()
+        self.gamma = nn.Parameter(torch.ones(d_model))   # scale only, no shift
+        self.eps = eps
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: Input tensor of shape (..., d_model).
+        Returns:
+            Normalized tensor of the same shape.
+        """
+        # RMS = sqrt(mean(x^2))
+        rms = torch.sqrt(
+            torch.mean(x ** 2, dim=-1, keepdim=True) + self.eps
+        )
+        return self.gamma * (x / rms)
+
+
+# --- Quick test ---
+if __name__ == "__main__":
+    rms_norm = RMSNorm(d_model=512)
+    x = torch.randn(2, 10, 512)
+    out = rms_norm(x)
+    print(f"Input shape:  {x.shape}")
+    print(f"Output shape: {out.shape}")
+    # Verify: output RMS should be close to 1 (before gamma scaling)
+    out_rms = torch.sqrt(torch.mean(out ** 2, dim=-1))
+    print(f"Output RMS (should be ~1): {out_rms[0, 0]:.4f}")</code></pre>
+    </div>
+
+    <!-- 3.3.3 Pre-LN vs Post-LN Transformer Block -->
+    <div id="pre-post-blocks" class="subsection">
+      <h3>3.3.3 Pre-LN vs Post-LN Transformer Blocks</h3>
+
+      <p>
+        Below are complete implementations of both block variants. Notice how the
+        only difference is the <strong>position of the normalization call</strong> —
+        the rest of the architecture is identical.
+      </p>
+
+      <div class="code-comparison">
+        <div class="code-panel">
+          <h4 class="code-panel-title" style="color: var(--color-training);">Post-LN Block (Original)</h4>
+          <pre><code class="language-python">class PostLNTransformerBlock(nn.Module):
+    """Transformer block with Post-LN placement.
+
+    LN(x + Sublayer(x)) — normalization AFTER residual.
+    Requires learning rate warmup for stable training.
+    """
+
+    def __init__(self, d_model, n_heads, d_ff, dropout=0.1):
+        super().__init__()
+        # Sublayers
+        self.attn = MultiHeadAttention(d_model, n_heads)
+        self.ffn = FeedForward(d_model, d_ff)
+
+        # Normalization AFTER residual (Post-LN)
+        self.norm1 = LayerNorm(d_model)
+        self.norm2 = LayerNorm(d_model)
+
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, mask=None):
+        # Step 1: Attention + Add + Norm
+        attn_out = self.attn(x, x, x, mask)
+        x = self.norm1(x + self.dropout(attn_out))
+        #    ^^^^^ LN wraps the sum
+
+        # Step 2: FFN + Add + Norm
+        ffn_out = self.ffn(x)
+        x = self.norm2(x + self.dropout(ffn_out))
+        #    ^^^^^ LN wraps the sum
+
+        return x</code></pre>
+        </div>
+
+        <div class="code-panel">
+          <h4 class="code-panel-title" style="color: var(--color-norm);">Pre-LN Block (Modern)</h4>
+          <pre><code class="language-python">class PreLNTransformerBlock(nn.Module):
+    """Transformer block with Pre-LN placement.
+
+    x + Sublayer(LN(x)) — normalization BEFORE sublayer.
+    Stable training without warmup. Used in GPT-2/3, LLaMA.
+    """
+
+    def __init__(self, d_model, n_heads, d_ff, dropout=0.1):
+        super().__init__()
+        # Sublayers
+        self.attn = MultiHeadAttention(d_model, n_heads)
+        self.ffn = FeedForward(d_model, d_ff)
+
+        # Normalization BEFORE sublayer (Pre-LN)
+        self.norm1 = LayerNorm(d_model)
+        self.norm2 = LayerNorm(d_model)
+
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, mask=None):
+        # Step 1: Norm + Attention + Add
+        normed = self.norm1(x)
+        attn_out = self.attn(normed, normed, normed, mask)
+        x = x + self.dropout(attn_out)
+        #   ^ clean residual addition
+
+        # Step 2: Norm + FFN + Add
+        normed = self.norm2(x)
+        ffn_out = self.ffn(normed)
+        x = x + self.dropout(ffn_out)
+        #   ^ clean residual addition
+
+        return x</code></pre>
+        </div>
+      </div>
+
+      <div class="callout warning">
+        <strong>Spot the pattern:</strong> In Post-LN, normalization <em>wraps</em>
+        the residual sum — <code>norm(x + sublayer(x))</code>. In Pre-LN,
+        normalization feeds <em>into</em> the sublayer, and the residual addition
+        happens last — <code>x + sublayer(norm(x))</code>. This keeps the residual
+        path clean in Pre-LN.
+      </div>
+    </div>
+
+    <!-- 3.3.4 Numerical Stability in Mixed Precision -->
+    <div id="mixed-precision" class="subsection">
+      <h3>3.3.4 Numerical Stability in Mixed Precision</h3>
+
+      <p>
+        Modern training uses <strong>mixed precision</strong> (FP16 or BF16) for
+        speed. But normalization involves computing means, variances, and
+        divisions — operations that are highly sensitive to numerical precision.
+        In FP16, the representable range is approximately \(\pm 65{,}504\), and
+        values like \(x^2\) can easily overflow.
+      </p>
+
+      <p>
+        The standard solution: <strong>upcast to FP32 for the normalization
+        computation, then cast back</strong>.
+      </p>
+
+      <pre><code class="language-python">class RMSNormFP32(nn.Module):
+    """RMSNorm with safe mixed-precision computation.
+
+    Upcasts to FP32 for the normalization math, then casts back
+    to the input dtype. This prevents overflow in FP16/BF16 training.
+    """
+
+    def __init__(self, d_model: int, eps: float = 1e-6):
+        super().__init__()
+        self.gamma = nn.Parameter(torch.ones(d_model))
+        self.eps = eps
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        input_dtype = x.dtype
+
+        # Upcast to FP32 for safe computation
+        x_fp32 = x.float()
+
+        # Compute RMS in FP32 — no overflow risk
+        rms = torch.sqrt(
+            torch.mean(x_fp32 ** 2, dim=-1, keepdim=True) + self.eps
+        )
+        x_normed = x_fp32 / rms
+
+        # Apply scale (also in FP32), then cast back
+        output = self.gamma.float() * x_normed
+        return output.to(input_dtype)
+
+
+# This pattern is used in HuggingFace Transformers, LLaMA, etc.
+# Example from LLaMA's implementation:
+#   variance = hidden_states.to(torch.float32).pow(2).mean(-1, keepdim=True)
+#   hidden_states = hidden_states * torch.rsqrt(variance + self.eps)
+#   return self.weight * hidden_states.to(input_dtype)</code></pre>
+
+      <div class="callout insight">
+        <strong>Performance note:</strong> The upcast to FP32 adds minimal overhead
+        because the normalization computation is memory-bandwidth-bound, not
+        compute-bound. The few extra FLOPS from FP32 arithmetic are negligible
+        compared to the memory traffic of reading and writing the tensor.
+      </div>
+    </div>
+  </section>
+
+
+  <!-- ======================================================
+       SECTION 3.4 — GOING DEEPER
+       ====================================================== -->
+  <section id="going-deeper" class="layer-section">
+    <h2>3.4 Going Deeper: Advanced Normalization Topics</h2>
+
+    <div class="subsection">
+      <h3>QK-Norm: Taming Attention Logits</h3>
+
+      <p>
+        As models grow wider (\(d_{\text{model}}\) increases), the dot products
+        \(\mathbf{q}^\top \mathbf{k}\) in attention can grow large even after the
+        \(\sqrt{d_k}\) scaling. <strong>QK-Norm</strong> applies LayerNorm (or
+        RMSNorm) to the query and key vectors <em>before</em> the dot product:
+      </p>
+
+      <div class="math-block">
+        \[
+        \text{Attention}(\mathbf{Q}, \mathbf{K}, \mathbf{V}) =
+        \text{softmax}\!\left(
+        \frac{\text{Norm}(\mathbf{Q}) \cdot \text{Norm}(\mathbf{K})^\top}{\sqrt{d_k}}
+        \right) \mathbf{V}
+        \]
+      </div>
+
+      <p>
+        This prevents attention logit growth during training and is used in
+        models like ViT-22B and Gemma 2. It's especially important for very
+        long context lengths where attention scores can become extreme.
+      </p>
+    </div>
+
+    <div class="subsection">
+      <h3>DeepNorm: Scaling to 1000+ Layers</h3>
+
+      <p>
+        Wang et al. (2022) proposed <strong>DeepNorm</strong> for training
+        extremely deep Transformers (up to 1000 layers). The idea: scale the
+        residual connection by a constant \(\alpha > 1\) and scale the sublayer
+        initialization by \(\beta < 1\):
+      </p>
+
+      <div class="math-block">
+        \[
+        \text{output} = \text{LayerNorm}\!\left(\alpha \cdot \mathbf{x} + \text{Sublayer}(\mathbf{x})\right)
+        \]
+      </div>
+
+      <p>
+        The scaling constants depend on the model depth \(N\):
+        \(\alpha = (2N)^{1/4}\), and Xavier initialization is scaled by
+        \(\beta = (8N)^{-1/4}\). This creates a strong "residual bias" that
+        stabilizes gradient flow in extreme-depth regimes.
+      </p>
+    </div>
+
+    <div class="subsection">
+      <h3>The Bigger Question: Is Normalization Fundamental?</h3>
+
+      <p>
+        Some researchers question whether normalization is truly necessary or
+        merely a patch for poor initialization and optimization:
+      </p>
+
+      <ul>
+        <li>
+          <strong>Fixup Initialization</strong> (Zhang et al., 2019) showed that
+          carefully designed initialization can replace normalization in ResNets.
+        </li>
+        <li>
+          <strong>NF-Nets</strong> (Brock et al., 2021) achieved state-of-the-art
+          ImageNet performance without any normalization layers.
+        </li>
+        <li>
+          For Transformers, however, no one has yet demonstrated competitive
+          performance without normalization at scale. The interaction between
+          attention, residual connections, and normalization appears to be
+          deeply intertwined.
+        </li>
+      </ul>
+
+      <p>
+        Open question: will future architectures find a way to eliminate
+        normalization entirely, or is it a fundamental ingredient of stable
+        deep learning?
+      </p>
+    </div>
+  </section>
+
+
+  <!-- ======================================================
+       VIDEO RESOURCE
+       ====================================================== -->
+  <section id="video" class="layer-section">
+    <h2>Video Resource</h2>
+
+    <div class="video-embed">
+      <iframe
+        src="https://www.youtube.com/embed/2V3Uduw1zwQ"
+        title="Umar Jamil — LLaMA explained"
+        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+        allowfullscreen>
+      </iframe>
+      <div class="video-caption">
+        Umar Jamil — LLaMA explained (covers RMSNorm, Pre-LN placement, and
+        other modern Transformer design choices in depth)
+      </div>
+    </div>
+  </section>
+
+
+  <!-- ======================================================
+       CROSS-LINKS
+       ====================================================== -->
+  <section id="cross-links" class="layer-section">
+    <h2>Related Pages</h2>
+
+    <div class="cross-link-grid">
+      <a href="self-attention.html" class="cross-link attention">
+        <span class="cross-link-icon">Q K V</span>
+        <div>
+          <strong>Self-Attention</strong>
+          <p>LayerNorm is applied before (Pre-LN) or after (Post-LN) the attention sublayer. Understanding attention mechanics helps clarify what normalization is stabilizing.</p>
+        </div>
+      </a>
+
+      <a href="encoder-decoder.html" class="cross-link architecture">
+        <span class="cross-link-icon">Enc-Dec</span>
+        <div>
+          <strong>Encoder-Decoder Architecture</strong>
+          <p>See how normalization fits into the full Transformer stack — each encoder and decoder layer contains multiple normalization operations.</p>
+        </div>
+      </a>
+
+      <a href="training.html" class="cross-link training">
+        <span class="cross-link-icon">Train</span>
+        <div>
+          <strong>Training &amp; Optimization</strong>
+          <p>Pre-LN enables training without learning rate warmup. This page covers the optimization implications in detail.</p>
+        </div>
+      </a>
+
+      <a href="modern-variants.html" class="cross-link modern">
+        <span class="cross-link-icon">2024+</span>
+        <div>
+          <strong>Modern Variants</strong>
+          <p>RMSNorm, QK-Norm, and DeepNorm in the context of LLaMA, Mistral, Gemma, and other modern architectures.</p>
+        </div>
+      </a>
+    </div>
+  </section>
+
+
+  <!-- ======================================================
+       FOOTER NAVIGATION
+       ====================================================== -->
+  <footer class="page-footer">
+    <div class="footer-nav">
+      <a href="positional-encoding.html" class="footer-prev">
+        <span class="footer-arrow">&larr;</span>
+        <div>
+          <span class="footer-label">Previous</span>
+          <span class="footer-title">Positional Encoding</span>
+        </div>
+      </a>
+      <a href="index.html" class="footer-home">
+        <span class="footer-label">Home</span>
+        <span class="footer-title">All Pages</span>
+      </a>
+      <a href="ffn-activations.html" class="footer-next">
+        <div>
+          <span class="footer-label">Next</span>
+          <span class="footer-title">FFN &amp; Activations</span>
+        </div>
+        <span class="footer-arrow">&rarr;</span>
+      </a>
+    </div>
+    <div class="footer-meta">
+      <p>
+        Transformer Deep Dive &mdash; A 3-layer learning resource inspired by
+        Lilian Weng, Jay Alammar, and the original research papers.
+      </p>
+    </div>
+  </footer>
+
+</main><!-- /.content -->
+
+<!-- ============================================================
+     SCRIPTS
+     ============================================================ -->
+<!-- Prism.js syntax highlighting -->
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+
+<script>
+// --- Theme toggle ---
+const toggle = document.querySelector('.theme-toggle');
+toggle.addEventListener('click', () => {
+  const current = document.documentElement.getAttribute('data-theme');
+  document.documentElement.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+  toggle.textContent = current === 'dark' ? '🌙' : '☀️';
+});
+
+// --- Sidebar TOC: highlight current section on scroll ---
+(function () {
+  const tocLinks = document.querySelectorAll('.sidebar-toc a[href^="#"]');
+  const sections = [];
+
+  tocLinks.forEach(link => {
+    const id = link.getAttribute('href').slice(1);
+    const el = document.getElementById(id);
+    if (el) sections.push({ id, el, link });
+  });
+
+  function onScroll() {
+    const scrollY = window.scrollY + 120;
+    let current = sections[0];
+
+    for (const section of sections) {
+      if (section.el.offsetTop <= scrollY) {
+        current = section;
+      }
+    }
+
+    tocLinks.forEach(l => l.classList.remove('active'));
+    if (current) current.link.classList.add('active');
+  }
+
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+})();
+
+// --- Smooth scroll for anchor links ---
+document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+  anchor.addEventListener('click', function (e) {
+    const target = document.querySelector(this.getAttribute('href'));
+    if (target) {
+      e.preventDefault();
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      history.pushState(null, '', this.getAttribute('href'));
+    }
+  });
+});
+</script>
+
+</body>
+</html>

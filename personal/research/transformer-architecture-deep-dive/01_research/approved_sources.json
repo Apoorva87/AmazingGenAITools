@@ -1,0 +1,32 @@
+{
+  "metadata": {
+    "total_approved": 52,
+    "total_rejected": 10,
+    "approval_criteria": "composite_score >= 0.75 OR tier <= 2",
+    "generated_at": "2026-03-23T00:02:00Z"
+  },
+  "approved_source_ids": [
+    "S001", "S002", "S003", "S004", "S005", "S006", "S007", "S008", "S009", "S010",
+    "S011", "S012", "S013", "S014", "S015", "S016", "S017", "S018", "S019", "S020",
+    "S021", "S022", "S023", "S024", "S025", "S026", "S027", "S028", "S029", "S030",
+    "S031", "S032", "S033", "S034", "S035", "S036", "S037", "S038", "S039", "S040",
+    "S041", "S042", "S043", "S044", "S045", "S046", "S047", "S048", "S049", "S050",
+    "S051", "S054"
+  ],
+  "rejected_source_ids": [
+    "S052", "S053", "S055", "S056", "S057", "S058", "S059", "S060", "S061", "S062"
+  ],
+  "rejection_reasons": {
+    "S052": "Community aggregator, not primary source. Low composite score.",
+    "S053": "Q&A fragments, not coherent resource. Low composite score.",
+    "S055": "API reference only, not pedagogical.",
+    "S056": "Supplementary only, covered better by other video sources.",
+    "S057": "Tangential topic, not core to Transformer understanding.",
+    "S058": "Too recent and niche for core curriculum. Include in further reading.",
+    "S059": "ViT training variant, covered adequately by S019.",
+    "S060": "Important but narrow scope. Reference in self-attention notes.",
+    "S061": "Distributed training is out of scope for core architecture study.",
+    "S062": "Important paper but content covered by FFN section discussion."
+  },
+  "note": "Rejected sources S058-S062 are borderline. Kept as further-reading references in source notes. S060 (GQA) and S062 (FFN as memories) are referenced within approved source notes for relevant sub-topics."
+}

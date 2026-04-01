@@ -1,0 +1,1247 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Feed-Forward Networks &amp; Activation Functions | Transformer Deep Dive</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js" defer></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js" defer></script>
+  <script>
+    MathJax = {
+      tex: { inlineMath: [['\\(','\\)']], displayMath: [['\\[','\\]']] },
+      options: { skipHtmlTags: ['script','noscript','style','textarea','pre','code'] }
+    };
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" async></script>
+</head>
+<body>
+
+<!-- ============================================================
+     TOP NAVIGATION BAR
+     ============================================================ -->
+<nav class="top-nav">
+  <a class="nav-brand" href="index.html">Transformer Deep Dive</a>
+  <div class="nav-links">
+    <a href="index.html">Home</a>
+    <a href="self-attention.html">Attention</a>
+    <a href="positional-encoding.html">Positional Encoding</a>
+    <a href="normalization.html">Normalization</a>
+    <a href="ffn-activations.html" class="active">FFN &amp; Activations</a>
+    <a href="encoder-decoder.html">Encoder-Decoder</a>
+    <a href="training.html">Training</a>
+    <a href="modern-variants.html">Modern Variants</a>
+  </div>
+  <button class="theme-toggle" aria-label="Toggle dark/light theme">&#x1F319;</button>
+</nav>
+
+<!-- ============================================================
+     PAGE LAYOUT
+     ============================================================ -->
+<div class="page-wrapper">
+
+  <!-- ---- Sidebar Table of Contents ---- -->
+  <aside class="sidebar">
+    <h3>On This Page</h3>
+    <ul>
+      <li><a href="#intuition">4.1 Intuition</a>
+        <ul>
+          <li><a href="#between-attention">Between Attention Layers</a></li>
+          <li><a href="#expansion-compression">Expansion &amp; Compression</a></li>
+        </ul>
+      </li>
+      <li><a href="#formalism">4.2 Formalism</a>
+        <ul>
+          <li><a href="#positionwise-ffn">Position-wise FFN</a></li>
+          <li><a href="#activation-functions">Activation Functions</a></li>
+          <li><a href="#glu-swiglu">GLU &amp; SwiGLU</a></li>
+          <li><a href="#ffn-as-memory">FFN as Key-Value Memory</a></li>
+        </ul>
+      </li>
+      <li><a href="#engineering">4.3 Engineering</a>
+        <ul>
+          <li><a href="#standard-ffn-impl">Standard FFN</a></li>
+          <li><a href="#swiglu-impl">SwiGLU FFN</a></li>
+          <li><a href="#activation-comparison">Activation Comparison</a></li>
+          <li><a href="#param-calculator">Parameter Calculator</a></li>
+        </ul>
+      </li>
+      <li><a href="#going-deeper">4.4 Going Deeper</a></li>
+      <li><a href="#video">Video Resource</a></li>
+    </ul>
+  </aside>
+
+  <!-- ---- Main Content ---- -->
+  <main class="main-content">
+
+    <!-- Page Header -->
+    <header class="page-header animate-in">
+      <div class="breadcrumb">
+        <a href="index.html">Home</a> / <span>Page 4 of 8</span>
+      </div>
+      <h1>Feed-Forward Networks &amp; Activation Functions</h1>
+      <p class="subtitle">
+        The silent workhorse of the Transformer: how position-wise feed-forward layers
+        transform token representations, store factual knowledge, and why the choice of
+        activation function matters more than you might expect.
+      </p>
+      <div class="layer-indicator">
+        <span class="layer-badge intuition">Intuition</span>
+        <span class="layer-badge formalism">Formalism</span>
+        <span class="layer-badge engineering">Engineering</span>
+      </div>
+    </header>
+
+    <!-- ============================================================
+         SECTION 4.1 — INTUITION
+         ============================================================ -->
+    <section id="intuition">
+      <h2>4.1 Intuition: What Happens Between Attention Layers?</h2>
+
+      <h3 id="between-attention">The Role of the FFN</h3>
+
+      <p>
+        Self-attention is the headline act of the Transformer, but it only does <em>one</em>
+        thing: it mixes information <strong>across tokens</strong>. After attention has decided
+        which tokens should talk to which, the feed-forward network (FFN) processes each
+        token's representation <strong>independently</strong>, applying the same learned
+        non-linear transformation to every position.
+      </p>
+
+      <p>
+        Think of it this way: attention is a <em>communication</em> step (tokens share
+        information) and the FFN is a <em>computation</em> step (each token digests what
+        it learned). Together they form the two fundamental operations inside every
+        Transformer block, repeated layer after layer.
+      </p>
+
+      <div class="callout key-idea">
+        <div class="callout-title">Key Idea</div>
+        <div class="callout-body">
+          Attention = <strong>inter-token</strong> mixing (who should I listen to?).
+          FFN = <strong>intra-token</strong> transformation (what should I become?).
+          Every Transformer layer applies both in sequence.
+        </div>
+      </div>
+
+      <h3 id="expansion-compression">The Expansion-Compression Metaphor</h3>
+
+      <p>
+        The FFN has a distinctive <strong>bottleneck</strong> shape. The input has dimension
+        \(d_{\text{model}}\). The FFN first <em>expands</em> it to a hidden dimension
+        \(d_{\text{ff}} = 4 \times d_{\text{model}}\), applies a non-linearity, then
+        <em>compresses</em> it back to \(d_{\text{model}}\).
+      </p>
+
+      <p>
+        Why expand? In a higher-dimensional space, non-linear transformations can carve out
+        more complex decision boundaries. The expansion gives the network <em>room to work</em>,
+        and the compression forces it to distill the result back into a compact representation.
+      </p>
+
+      <div class="callout warning">
+        <div class="callout-title">Parameter Budget</div>
+        <div class="callout-body">
+          The FFN accounts for roughly <strong>two-thirds</strong> of all parameters in a
+          standard Transformer layer. For a layer with \(d_{\text{model}} = 512\) and
+          \(d_{\text{ff}} = 2048\), the FFN has \(2 \times 512 \times 2048 \approx 2\text{M}\)
+          parameters, while multi-head attention has about \(4 \times 512^2 \approx 1\text{M}\).
+        </div>
+      </div>
+
+      <!-- SVG: Bottleneck Diagram -->
+      <div class="diagram-container">
+        <div class="figure">
+          <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="max-width:660px;">
+            <defs>
+              <linearGradient id="gradExpand" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stop-color="#E67E22"/>
+                <stop offset="100%" stop-color="#F39C12"/>
+              </linearGradient>
+              <linearGradient id="gradCompress" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stop-color="#F39C12"/>
+                <stop offset="100%" stop-color="#E67E22"/>
+              </linearGradient>
+              <marker id="arrowRight" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+                <polygon points="0 0, 10 3.5, 0 7" fill="#555"/>
+              </marker>
+            </defs>
+
+            <!-- Input block -->
+            <rect x="20" y="110" width="90" height="80" rx="8" fill="#4A90D9" opacity="0.85"/>
+            <text x="65" y="145" text-anchor="middle" fill="white" font-family="Helvetica Neue, Arial, sans-serif" font-size="12" font-weight="600">Input</text>
+            <text x="65" y="168" text-anchor="middle" fill="white" font-family="SF Mono, Consolas, monospace" font-size="11">d_model</text>
+            <text x="65" y="183" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-family="SF Mono, Consolas, monospace" font-size="10">(512)</text>
+
+            <!-- Expansion arrow -->
+            <line x1="115" y1="150" x2="175" y2="150" stroke="#555" stroke-width="2" marker-end="url(#arrowRight)"/>
+            <text x="145" y="138" text-anchor="middle" fill="#555" font-family="Helvetica Neue, Arial, sans-serif" font-size="10">W&#x2081;</text>
+
+            <!-- Hidden block (wide) -->
+            <rect x="180" y="50" width="140" height="200" rx="10" fill="url(#gradExpand)" opacity="0.9"/>
+            <text x="250" y="130" text-anchor="middle" fill="white" font-family="Helvetica Neue, Arial, sans-serif" font-size="13" font-weight="700">Hidden</text>
+            <text x="250" y="155" text-anchor="middle" fill="white" font-family="SF Mono, Consolas, monospace" font-size="12">d_ff = 4 * d_model</text>
+            <text x="250" y="175" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-family="SF Mono, Consolas, monospace" font-size="11">(2048)</text>
+            <text x="250" y="205" text-anchor="middle" fill="rgba(255,255,255,0.85)" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" font-style="italic">+ activation</text>
+
+            <!-- Compression arrow -->
+            <line x1="325" y1="150" x2="385" y2="150" stroke="#555" stroke-width="2" marker-end="url(#arrowRight)"/>
+            <text x="355" y="138" text-anchor="middle" fill="#555" font-family="Helvetica Neue, Arial, sans-serif" font-size="10">W&#x2082;</text>
+
+            <!-- Output block -->
+            <rect x="390" y="110" width="90" height="80" rx="8" fill="#27AE60" opacity="0.85"/>
+            <text x="435" y="145" text-anchor="middle" fill="white" font-family="Helvetica Neue, Arial, sans-serif" font-size="12" font-weight="600">Output</text>
+            <text x="435" y="168" text-anchor="middle" fill="white" font-family="SF Mono, Consolas, monospace" font-size="11">d_model</text>
+            <text x="435" y="183" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-family="SF Mono, Consolas, monospace" font-size="10">(512)</text>
+
+            <!-- Shape outline hint -->
+            <path d="M 110 105 Q 150 50, 180 50 L 320 50 Q 350 50, 390 105" fill="none" stroke="#aaa" stroke-width="1" stroke-dasharray="4,3"/>
+            <path d="M 110 195 Q 150 250, 180 250 L 320 250 Q 350 250, 390 195" fill="none" stroke="#aaa" stroke-width="1" stroke-dasharray="4,3"/>
+
+            <!-- Annotation -->
+            <text x="520" y="80" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#888">Narrow</text>
+            <text x="520" y="100" font-family="Helvetica Neue, Arial, sans-serif" font-size="14" fill="#E67E22" font-weight="700">WIDE</text>
+            <text x="520" y="120" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#888">Narrow</text>
+            <text x="520" y="155" font-family="Helvetica Neue, Arial, sans-serif" font-size="10" fill="#aaa">"Bottleneck"</text>
+            <text x="520" y="170" font-family="Helvetica Neue, Arial, sans-serif" font-size="10" fill="#aaa">architecture</text>
+
+            <!-- Residual path hint -->
+            <path d="M 65 195 L 65 270 L 435 270 L 435 195" fill="none" stroke="#999" stroke-width="1.5" stroke-dasharray="5,4"/>
+            <text x="250" y="287" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="10" fill="#999">+ residual connection (see normalization.html)</text>
+          </svg>
+          <div class="caption">Figure 4.1 &mdash; The FFN bottleneck: expand to \(4 \times d_{\text{model}}\), apply non-linearity, compress back.</div>
+        </div>
+      </div>
+
+      <p>
+        This expand-compress pattern is not unique to Transformers &mdash; autoencoders and
+        bottleneck residual blocks in ResNets use similar ideas. What makes the Transformer
+        FFN special is that it is applied <strong>identically and independently</strong> to
+        every token position, making it trivially parallelizable.
+      </p>
+    </section>
+
+    <!-- ============================================================
+         SECTION 4.2 — FORMALISM
+         ============================================================ -->
+    <section id="formalism">
+      <h2>4.2 Formalism</h2>
+
+      <!-- 4.2.1 Position-wise FFN -->
+      <h3 id="positionwise-ffn">4.2.1 Position-wise Feed-Forward Network</h3>
+
+      <p>
+        Given an input vector \(\mathbf{x} \in \mathbb{R}^{d_{\text{model}}}\) at a single
+        token position, the position-wise FFN computes:
+      </p>
+
+      <div class="math-block">
+        <div class="equation-row">
+          <span>\[\text{FFN}(\mathbf{x}) = \mathbf{W}_2 \, \sigma\!\left(\mathbf{W}_1 \mathbf{x} + \mathbf{b}_1\right) + \mathbf{b}_2\]</span>
+          <span class="eq-number">(4.1)</span>
+        </div>
+      </div>
+
+      <p>where:</p>
+      <ul>
+        <li>\(\mathbf{W}_1 \in \mathbb{R}^{d_{\text{ff}} \times d_{\text{model}}}\) &mdash; expansion weight matrix</li>
+        <li>\(\mathbf{W}_2 \in \mathbb{R}^{d_{\text{model}} \times d_{\text{ff}}}\) &mdash; compression weight matrix</li>
+        <li>\(\mathbf{b}_1 \in \mathbb{R}^{d_{\text{ff}}}\), \(\mathbf{b}_2 \in \mathbb{R}^{d_{\text{model}}}\) &mdash; bias vectors</li>
+        <li>\(\sigma\) &mdash; a non-linear activation function (ReLU in the original paper)</li>
+      </ul>
+
+      <p>
+        The standard setting is \(d_{\text{ff}} = 4 \times d_{\text{model}}\). For the
+        base Transformer (\(d_{\text{model}} = 512\)), this gives \(d_{\text{ff}} = 2048\).
+        The word <em>position-wise</em> means the same weight matrices are applied
+        independently at each position &mdash; no information crosses token boundaries
+        inside the FFN.
+      </p>
+
+      <div class="callout insight">
+        <div class="callout-title">Parameter Count</div>
+        <div class="callout-body">
+          Each FFN layer has \(2 \times d_{\text{model}} \times d_{\text{ff}}\) weight
+          parameters (plus biases). For the base model: \(2 \times 512 \times 2048 =
+          2{,}097{,}152 \approx 2\text{M}\) per layer. With 6 encoder + 6 decoder layers,
+          that is about 25M parameters just from FFNs.
+        </div>
+      </div>
+
+      <!-- 4.2.2 Activation Functions -->
+      <h3 id="activation-functions">4.2.2 Activation Functions</h3>
+
+      <p>
+        The choice of activation function \(\sigma\) has a surprisingly large effect on
+        model quality. Here are the three most important ones for Transformers:
+      </p>
+
+      <h4>ReLU (Rectified Linear Unit)</h4>
+      <div class="math-block">
+        <div class="equation-row">
+          <span>\[\text{ReLU}(x) = \max(0, x)\]</span>
+          <span class="eq-number">(4.2)</span>
+        </div>
+      </div>
+      <p>
+        Used in the original Transformer (Vaswani et al., 2017). Computationally cheap,
+        introduces sparsity (many activations are exactly zero), but suffers from the
+        <strong>dying ReLU</strong> problem: neurons whose inputs are always negative
+        will never activate and their gradients are perpetually zero.
+      </p>
+
+      <h4>GELU (Gaussian Error Linear Unit)</h4>
+      <div class="math-block">
+        <div class="equation-row">
+          <span>\[\text{GELU}(x) = x \cdot \Phi(x)\]</span>
+          <span class="eq-number">(4.3)</span>
+        </div>
+      </div>
+      <p>
+        where \(\Phi(x)\) is the CDF of the standard normal distribution.
+        The intuition: multiply each input by the <em>probability that it is positive</em>
+        under a Gaussian. This gives a smooth, non-monotonic "soft gate" around zero.
+        GELU is used in BERT, GPT-2, and many subsequent models. It can be approximated as
+        \(\text{GELU}(x) \approx 0.5 x \left(1 + \tanh\!\left[\sqrt{2/\pi}\,(x + 0.044715\,x^3)\right]\right)\).
+      </p>
+
+      <h4>SiLU / Swish</h4>
+      <div class="math-block">
+        <div class="equation-row">
+          <span>\[\text{SiLU}(x) = x \cdot \sigma(x) = \frac{x}{1 + e^{-x}}\]</span>
+          <span class="eq-number">(4.4)</span>
+        </div>
+      </div>
+      <p>
+        Also called Swish (Ramachandran et al., 2017). It is <strong>self-gated</strong>:
+        the input is multiplied by its own sigmoid. Like GELU, it is smooth and allows
+        small negative values to pass through. Used in PaLM and LLaMA.
+      </p>
+
+      <!-- SVG: Activation Function Comparison Plot -->
+      <div class="diagram-container">
+        <div class="figure">
+          <svg viewBox="0 0 700 520" xmlns="http://www.w3.org/2000/svg" style="max-width:680px;">
+            <!-- Title -->
+            <text x="350" y="25" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="14" font-weight="700" fill="#333">Activation Functions &amp; Their Derivatives</text>
+
+            <!-- ===== TOP PLOT: Activations ===== -->
+            <g transform="translate(80, 50)">
+              <!-- Axes -->
+              <line x1="0" y1="100" x2="540" y2="100" stroke="#ccc" stroke-width="1"/>
+              <line x1="270" y1="0" x2="270" y2="200" stroke="#ccc" stroke-width="1"/>
+              <!-- Axis labels -->
+              <text x="270" y="218" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#888">x</text>
+              <text x="-8" y="104" text-anchor="end" font-family="SF Mono, Consolas, monospace" font-size="9" fill="#aaa">0</text>
+              <!-- Tick marks -->
+              <text x="90" y="118" text-anchor="middle" font-family="SF Mono, Consolas, monospace" font-size="9" fill="#aaa">-4</text>
+              <text x="180" y="118" text-anchor="middle" font-family="SF Mono, Consolas, monospace" font-size="9" fill="#aaa">-2</text>
+              <text x="360" y="118" text-anchor="middle" font-family="SF Mono, Consolas, monospace" font-size="9" fill="#aaa">2</text>
+              <text x="450" y="118" text-anchor="middle" font-family="SF Mono, Consolas, monospace" font-size="9" fill="#aaa">4</text>
+              <text x="-8" y="59" text-anchor="end" font-family="SF Mono, Consolas, monospace" font-size="9" fill="#aaa">2</text>
+              <text x="-8" y="14" text-anchor="end" font-family="SF Mono, Consolas, monospace" font-size="9" fill="#aaa">4</text>
+
+              <!-- Grid lines -->
+              <line x1="0" y1="55" x2="540" y2="55" stroke="#eee" stroke-width="0.5"/>
+              <line x1="0" y1="10" x2="540" y2="10" stroke="#eee" stroke-width="0.5"/>
+
+              <!-- ReLU: max(0, x) -->
+              <polyline fill="none" stroke="#E74C3C" stroke-width="2.5"
+                points="0,100 90,100 180,100 270,100 315,78 360,55 405,33 450,10 495,-12"
+                clip-path="url(#clipTop)"/>
+
+              <!-- GELU: approximate x * 0.5*(1+tanh(sqrt(2/pi)*(x+0.044715*x^3))) -->
+              <!-- Sampled points at x = -4,-3.5,...,4 mapped to pixel coords -->
+              <!-- x_px = 270 + x*45, y_px = 100 - val*22.5 -->
+              <polyline fill="none" stroke="#3498DB" stroke-width="2.5"
+                points="90,100 112,100 135,99.8 157,99 180,97 202,94 225,93 247,96 270,100
+                        292,93 315,78 337,58 360,37 382,16 405,-6 427,-28 450,-50 472,-72 495,-92"
+                clip-path="url(#clipTop)"/>
+
+              <!-- SiLU: x * sigmoid(x) = x/(1+exp(-x)) -->
+              <polyline fill="none" stroke="#2ECC71" stroke-width="2.5"
+                points="90,103 112,102.5 135,102 157,101 180,99 202,97.5 225,97 247,98.5 270,100
+                        292,95 315,82 337,63 360,40 382,18 405,-5 427,-28 450,-50 472,-72 495,-94"
+                clip-path="url(#clipTop)"/>
+
+              <!-- Clip rect for top plot -->
+              <defs>
+                <clipPath id="clipTop">
+                  <rect x="-5" y="-5" width="555" height="215"/>
+                </clipPath>
+              </defs>
+
+              <!-- Legend -->
+              <rect x="380" y="140" width="155" height="55" rx="5" fill="white" fill-opacity="0.9" stroke="#ddd"/>
+              <line x1="390" y1="155" x2="415" y2="155" stroke="#E74C3C" stroke-width="2.5"/>
+              <text x="420" y="159" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#333">ReLU</text>
+              <line x1="390" y1="172" x2="415" y2="172" stroke="#3498DB" stroke-width="2.5"/>
+              <text x="420" y="176" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#333">GELU</text>
+              <line x1="390" y1="189" x2="415" y2="189" stroke="#2ECC71" stroke-width="2.5"/>
+              <text x="420" y="193" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#333">SiLU / Swish</text>
+
+              <text x="270" y="-8" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="12" font-weight="600" fill="#555">f(x)</text>
+            </g>
+
+            <!-- ===== BOTTOM PLOT: Derivatives ===== -->
+            <g transform="translate(80, 310)">
+              <text x="270" y="-18" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="12" font-weight="600" fill="#555">f'(x)  (Derivatives)</text>
+
+              <!-- Axes -->
+              <line x1="0" y1="90" x2="540" y2="90" stroke="#ccc" stroke-width="1"/>
+              <line x1="270" y1="0" x2="270" y2="180" stroke="#ccc" stroke-width="1"/>
+
+              <text x="-8" y="94" text-anchor="end" font-family="SF Mono, Consolas, monospace" font-size="9" fill="#aaa">0</text>
+              <text x="-8" y="24" text-anchor="end" font-family="SF Mono, Consolas, monospace" font-size="9" fill="#aaa">1</text>
+              <text x="180" y="108" text-anchor="middle" font-family="SF Mono, Consolas, monospace" font-size="9" fill="#aaa">-2</text>
+              <text x="360" y="108" text-anchor="middle" font-family="SF Mono, Consolas, monospace" font-size="9" fill="#aaa">2</text>
+              <line x1="0" y1="20" x2="540" y2="20" stroke="#eee" stroke-width="0.5"/>
+
+              <!-- ReLU derivative: 0 for x<0, 1 for x>0 (step function) -->
+              <polyline fill="none" stroke="#E74C3C" stroke-width="2.5" stroke-dasharray="none"
+                points="0,90 270,90"/>
+              <polyline fill="none" stroke="#E74C3C" stroke-width="2.5"
+                points="270,20 540,20"/>
+              <circle cx="270" cy="90" r="3" fill="white" stroke="#E74C3C" stroke-width="2"/>
+              <circle cx="270" cy="20" r="3" fill="#E74C3C" stroke="#E74C3C" stroke-width="2"/>
+
+              <!-- GELU derivative (approximation): smooth sigmoid-like -->
+              <polyline fill="none" stroke="#3498DB" stroke-width="2.5"
+                points="0,90 45,90 90,89.5 135,88 157,85 180,78 202,65 225,50 247,38 258,30
+                        270,25 282,20 292,18 315,17 337,18 360,19 382,19.5 405,20 450,20 495,20 540,20"/>
+
+              <!-- SiLU derivative: sigmoid(x) + x*sigmoid(x)*(1-sigmoid(x)) -->
+              <polyline fill="none" stroke="#2ECC71" stroke-width="2.5"
+                points="0,88 45,87.5 90,87 112,85.5 135,83 157,78 180,68 202,52 225,38 247,28
+                        270,25 292,28 315,22 337,18 360,17 382,18 405,19 427,19.5 450,20 495,20 540,20"/>
+
+              <!-- Legend -->
+              <rect x="380" y="120" width="155" height="55" rx="5" fill="white" fill-opacity="0.9" stroke="#ddd"/>
+              <line x1="390" y1="135" x2="415" y2="135" stroke="#E74C3C" stroke-width="2.5"/>
+              <text x="420" y="139" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#333">ReLU'</text>
+              <line x1="390" y1="152" x2="415" y2="152" stroke="#3498DB" stroke-width="2.5"/>
+              <text x="420" y="156" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#333">GELU'</text>
+              <line x1="390" y1="169" x2="415" y2="169" stroke="#2ECC71" stroke-width="2.5"/>
+              <text x="420" y="173" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#333">SiLU'</text>
+            </g>
+          </svg>
+          <div class="caption">Figure 4.2 &mdash; ReLU, GELU, and SiLU/Swish: function values (top) and derivatives (bottom). Note how GELU and SiLU allow small negative values through and have smooth derivatives everywhere.</div>
+        </div>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Activation</th>
+            <th>Formula</th>
+            <th>Smooth?</th>
+            <th>Sparse?</th>
+            <th>Used In</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>ReLU</td>
+            <td>\(\max(0, x)\)</td>
+            <td>No (kink at 0)</td>
+            <td>Yes</td>
+            <td>Original Transformer</td>
+          </tr>
+          <tr>
+            <td>GELU</td>
+            <td>\(x \cdot \Phi(x)\)</td>
+            <td>Yes</td>
+            <td>Approximately</td>
+            <td>BERT, GPT-2, GPT-3</td>
+          </tr>
+          <tr>
+            <td>SiLU/Swish</td>
+            <td>\(x \cdot \sigma(x)\)</td>
+            <td>Yes</td>
+            <td>No</td>
+            <td>PaLM, LLaMA</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- 4.2.3 GLU and SwiGLU -->
+      <h3 id="glu-swiglu">4.2.3 Gated Linear Units (GLU) and SwiGLU</h3>
+
+      <p>
+        A powerful variant replaces the simple FFN with a <strong>gated</strong> architecture.
+        Instead of one up-projection, the network uses <em>two</em> parallel projections:
+        one produces a "value" and the other produces a "gate" that controls how much of the
+        value to let through.
+      </p>
+
+      <h4>GLU (Dauphin et al., 2017)</h4>
+      <div class="math-block">
+        <div class="equation-row">
+          <span>\[\text{GLU}(\mathbf{x}) = \left(\mathbf{x}\mathbf{W}_1\right) \odot \sigma\!\left(\mathbf{x}\mathbf{W}_3\right)\]</span>
+          <span class="eq-number">(4.5)</span>
+        </div>
+      </div>
+      <p>
+        where \(\odot\) denotes element-wise multiplication and \(\sigma\) is the sigmoid function.
+        The idea is that \(\mathbf{x}\mathbf{W}_3\) learns <em>which dimensions to activate</em>,
+        while \(\mathbf{x}\mathbf{W}_1\) provides the <em>content</em> to activate.
+      </p>
+
+      <h4>SwiGLU (Shazeer, 2020)</h4>
+      <div class="math-block">
+        <div class="equation-row">
+          <span>\[\text{SwiGLU}(\mathbf{x}) = \left(\text{SiLU}(\mathbf{x}\mathbf{W}_1)\right) \odot \left(\mathbf{x}\mathbf{W}_3\right)\]</span>
+          <span class="eq-number">(4.6)</span>
+        </div>
+      </div>
+      <p>
+        The full SwiGLU FFN then applies a down-projection:
+      </p>
+      <div class="math-block">
+        <div class="equation-row">
+          <span>\[\text{FFN}_{\text{SwiGLU}}(\mathbf{x}) = \left(\text{SiLU}(\mathbf{x}\mathbf{W}_1) \odot \mathbf{x}\mathbf{W}_3\right) \mathbf{W}_2\]</span>
+          <span class="eq-number">(4.7)</span>
+        </div>
+      </div>
+
+      <p>
+        SwiGLU uses <strong>three</strong> weight matrices: \(\mathbf{W}_1\) (gate projection),
+        \(\mathbf{W}_3\) (value/up projection), and \(\mathbf{W}_2\) (down projection).
+        Since we now have three matrices instead of two, keeping the total parameter count
+        roughly constant requires reducing \(d_{\text{ff}}\). The standard choice is:
+      </p>
+      <div class="math-block">
+        <div class="equation-row">
+          <span>\[d_{\text{ff}} = \frac{2}{3} \times 4 \times d_{\text{model}} \approx 2.67 \times d_{\text{model}}\]</span>
+          <span class="eq-number">(4.8)</span>
+        </div>
+      </div>
+
+      <div class="callout historical">
+        <div class="callout-title">Shazeer (2020)</div>
+        <div class="callout-body">
+          In "GLU Variants Improve Transformer," Noam Shazeer systematically compared activation
+          functions in Transformers. SwiGLU consistently outperformed standard ReLU and GELU
+          across multiple benchmarks, leading to its adoption in PaLM, LLaMA, Mistral, and
+          most modern LLMs.
+        </div>
+      </div>
+
+      <!-- SVG: Dual-path gating mechanism -->
+      <div class="diagram-container">
+        <div class="figure">
+          <svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="max-width:680px;">
+            <defs>
+              <marker id="arrowGate" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                <polygon points="0 0, 8 3, 0 6" fill="#555"/>
+              </marker>
+            </defs>
+
+            <!-- Input -->
+            <rect x="20" y="140" width="80" height="60" rx="8" fill="#4A90D9" opacity="0.85"/>
+            <text x="60" y="168" text-anchor="middle" fill="white" font-family="Helvetica Neue, Arial, sans-serif" font-size="12" font-weight="600">x</text>
+            <text x="60" y="186" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-family="SF Mono, Consolas, monospace" font-size="9">d_model</text>
+
+            <!-- Fork -->
+            <line x1="100" y1="170" x2="140" y2="170" stroke="#555" stroke-width="1.5"/>
+            <circle cx="140" cy="170" r="3" fill="#555"/>
+            <line x1="140" y1="170" x2="180" y2="90" stroke="#555" stroke-width="1.5" marker-end="url(#arrowGate)"/>
+            <line x1="140" y1="170" x2="180" y2="250" stroke="#555" stroke-width="1.5" marker-end="url(#arrowGate)"/>
+
+            <!-- Gate path (top): W1 + SiLU -->
+            <rect x="185" y="60" width="80" height="55" rx="6" fill="#E67E22" opacity="0.85"/>
+            <text x="225" y="83" text-anchor="middle" fill="white" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" font-weight="600">x W&#x2081;</text>
+            <text x="225" y="103" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-family="SF Mono, Consolas, monospace" font-size="9">d_ff</text>
+
+            <line x1="265" y1="87" x2="310" y2="87" stroke="#555" stroke-width="1.5" marker-end="url(#arrowGate)"/>
+
+            <rect x="315" y="65" width="70" height="45" rx="6" fill="#C0392B" opacity="0.85"/>
+            <text x="350" y="90" text-anchor="middle" fill="white" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" font-weight="700">SiLU</text>
+
+            <!-- Value path (bottom): W3 -->
+            <rect x="185" y="225" width="80" height="55" rx="6" fill="#E67E22" opacity="0.85"/>
+            <text x="225" y="248" text-anchor="middle" fill="white" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" font-weight="600">x W&#x2083;</text>
+            <text x="225" y="268" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-family="SF Mono, Consolas, monospace" font-size="9">d_ff</text>
+
+            <!-- Lines to element-wise multiply -->
+            <line x1="385" y1="87" x2="440" y2="140" stroke="#555" stroke-width="1.5" marker-end="url(#arrowGate)"/>
+            <line x1="265" y1="252" x2="440" y2="165" stroke="#555" stroke-width="1.5" marker-end="url(#arrowGate)"/>
+
+            <!-- Element-wise multiply circle -->
+            <circle cx="450" cy="155" r="22" fill="#8E44AD" opacity="0.85"/>
+            <text x="450" y="161" text-anchor="middle" fill="white" font-family="SF Mono, Consolas, monospace" font-size="18" font-weight="700">&#x2299;</text>
+
+            <!-- Down-projection: W2 -->
+            <line x1="472" y1="155" x2="510" y2="155" stroke="#555" stroke-width="1.5" marker-end="url(#arrowGate)"/>
+            <rect x="515" y="130" width="80" height="50" rx="6" fill="#E67E22" opacity="0.85"/>
+            <text x="555" y="152" text-anchor="middle" fill="white" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" font-weight="600">W&#x2082;</text>
+            <text x="555" y="170" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-family="SF Mono, Consolas, monospace" font-size="9">d_model</text>
+
+            <!-- Output -->
+            <line x1="595" y1="155" x2="635" y2="155" stroke="#555" stroke-width="1.5" marker-end="url(#arrowGate)"/>
+            <rect x="640" y="130" width="50" height="50" rx="8" fill="#27AE60" opacity="0.85"/>
+            <text x="665" y="160" text-anchor="middle" fill="white" font-family="Helvetica Neue, Arial, sans-serif" font-size="12" font-weight="600">out</text>
+
+            <!-- Labels -->
+            <text x="225" y="45" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="10" fill="#C0392B" font-weight="600">Gate Path</text>
+            <text x="225" y="300" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="10" fill="#E67E22" font-weight="600">Value Path</text>
+            <text x="450" y="125" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="9" fill="#8E44AD" font-weight="600">Element-wise</text>
+            <text x="450" y="195" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="9" fill="#8E44AD" font-weight="600">Product</text>
+
+            <!-- Annotation -->
+            <text x="350" y="325" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#888" font-style="italic">SwiGLU: gate decides how much of each hidden dimension to keep</text>
+          </svg>
+          <div class="caption">Figure 4.3 &mdash; SwiGLU dual-path architecture: the gate path controls element-wise which hidden dimensions pass through.</div>
+        </div>
+      </div>
+
+      <!-- 4.2.4 FFN as Key-Value Memory -->
+      <h3 id="ffn-as-memory">4.2.4 FFN as Key-Value Memory</h3>
+
+      <p>
+        A fascinating perspective from <strong>Geva et al. (2021)</strong> reinterprets the
+        FFN as a form of <em>key-value memory</em>. Consider the FFN written as a sum over
+        hidden units:
+      </p>
+
+      <div class="math-block">
+        <div class="equation-row">
+          <span>\[\text{FFN}(\mathbf{x}) = \sum_{i=1}^{d_{\text{ff}}} \underbrace{\sigma(\mathbf{w}_{1,i} \cdot \mathbf{x})}_{\text{activation (match score)}} \cdot \underbrace{\mathbf{w}_{2,i}}_{\text{value vector}}\]</span>
+          <span class="eq-number">(4.9)</span>
+        </div>
+      </div>
+
+      <p>where:</p>
+      <ul>
+        <li>\(\mathbf{w}_{1,i}\) is the \(i\)-th <strong>row</strong> of \(\mathbf{W}_1\) &mdash; it acts as a <strong>key</strong> that "activates" when the input matches a particular pattern</li>
+        <li>\(\mathbf{w}_{2,i}\) is the \(i\)-th <strong>column</strong> of \(\mathbf{W}_2\) &mdash; it acts as the <strong>value</strong> to inject into the residual stream</li>
+        <li>The activation \(\sigma(\mathbf{w}_{1,i} \cdot \mathbf{x})\) is the "match score" between the input and the \(i\)-th key</li>
+      </ul>
+
+      <div class="callout key-idea">
+        <div class="callout-title">FFN as Memory</div>
+        <div class="callout-body">
+          The FFN is remarkably similar to attention! In attention, queries match against keys
+          to produce weights over values. In the FFN, the input matches against learned key
+          vectors (rows of \(\mathbf{W}_1\)) to produce weights over value vectors (columns
+          of \(\mathbf{W}_2\)). The crucial difference: attention retrieves from the <em>context</em>
+          (other tokens), while FFN retrieves from <em>learned parameters</em> (static memory).
+        </div>
+      </div>
+
+      <p>
+        This interpretation has a profound implication: <strong>FFN layers store factual
+        knowledge</strong> in their weights, while attention layers <strong>route information</strong>
+        between tokens. This is supported by empirical work showing that knowledge-related
+        facts (e.g., "The Eiffel Tower is in Paris") are localized in specific FFN neurons,
+        and can be edited by modifying specific rows/columns of the FFN matrices.
+      </p>
+
+      <!-- SVG: FFN as Key-Value Memory -->
+      <div class="diagram-container">
+        <div class="figure">
+          <svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="max-width:680px;">
+            <defs>
+              <marker id="arrowMem" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+                <polygon points="0 0, 8 3, 0 6" fill="#555"/>
+              </marker>
+            </defs>
+
+            <!-- Input vector -->
+            <rect x="30" y="130" width="60" height="100" rx="6" fill="#4A90D9" opacity="0.85"/>
+            <text x="60" y="175" text-anchor="middle" fill="white" font-family="Helvetica Neue, Arial, sans-serif" font-size="12" font-weight="600">x</text>
+            <text x="60" y="195" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-family="SF Mono, Consolas, monospace" font-size="9">input</text>
+
+            <!-- Keys (W1 rows) -->
+            <line x1="90" y1="180" x2="130" y2="180" stroke="#555" stroke-width="1.5" marker-end="url(#arrowMem)"/>
+            <text x="115" y="170" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="9" fill="#888">dot product</text>
+
+            <!-- Key rows -->
+            <g transform="translate(140, 70)">
+              <text x="50" y="-5" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" font-weight="600" fill="#E67E22">Keys (W&#x2081; rows)</text>
+              <rect x="0" y="5" width="100" height="22" rx="3" fill="#E67E22" opacity="0.7"/>
+              <text x="50" y="20" text-anchor="middle" fill="white" font-family="SF Mono, Consolas, monospace" font-size="9">w&#x2081;,&#x2081; (city?)</text>
+              <rect x="0" y="32" width="100" height="22" rx="3" fill="#E67E22" opacity="0.7"/>
+              <text x="50" y="47" text-anchor="middle" fill="white" font-family="SF Mono, Consolas, monospace" font-size="9">w&#x2081;,&#x2082; (verb?)</text>
+              <rect x="0" y="59" width="100" height="22" rx="3" fill="#E67E22" opacity="0.7"/>
+              <text x="50" y="74" text-anchor="middle" fill="white" font-family="SF Mono, Consolas, monospace" font-size="9">w&#x2081;,&#x2083; (noun?)</text>
+              <text x="50" y="98" text-anchor="middle" fill="#aaa" font-family="Helvetica Neue, Arial, sans-serif" font-size="14">...</text>
+              <rect x="0" y="110" width="100" height="22" rx="3" fill="#E67E22" opacity="0.7"/>
+              <text x="50" y="125" text-anchor="middle" fill="white" font-family="SF Mono, Consolas, monospace" font-size="9">w&#x2081;,d_ff</text>
+            </g>
+
+            <!-- Activations -->
+            <g transform="translate(280, 70)">
+              <text x="35" y="-5" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" font-weight="600" fill="#C0392B">Activations</text>
+              <rect x="5" y="5" width="60" height="22" rx="3" fill="#C0392B" opacity="0.85"/>
+              <text x="35" y="20" text-anchor="middle" fill="white" font-family="SF Mono, Consolas, monospace" font-size="10" font-weight="700">0.95</text>
+              <rect x="5" y="32" width="60" height="22" rx="3" fill="#C0392B" opacity="0.3"/>
+              <text x="35" y="47" text-anchor="middle" fill="white" font-family="SF Mono, Consolas, monospace" font-size="10">0.01</text>
+              <rect x="5" y="59" width="60" height="22" rx="3" fill="#C0392B" opacity="0.6"/>
+              <text x="35" y="74" text-anchor="middle" fill="white" font-family="SF Mono, Consolas, monospace" font-size="10">0.42</text>
+              <text x="35" y="98" text-anchor="middle" fill="#aaa" font-family="Helvetica Neue, Arial, sans-serif" font-size="14">...</text>
+              <rect x="5" y="110" width="60" height="22" rx="3" fill="#C0392B" opacity="0.2"/>
+              <text x="35" y="125" text-anchor="middle" fill="white" font-family="SF Mono, Consolas, monospace" font-size="10">0.00</text>
+            </g>
+
+            <!-- Multiply symbol -->
+            <text x="370" y="150" text-anchor="middle" font-family="SF Mono, Consolas, monospace" font-size="22" fill="#8E44AD" font-weight="700">&#xD7;</text>
+
+            <!-- Values (W2 columns) -->
+            <g transform="translate(400, 70)">
+              <text x="55" y="-5" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" font-weight="600" fill="#27AE60">Values (W&#x2082; cols)</text>
+              <rect x="0" y="5" width="110" height="22" rx="3" fill="#27AE60" opacity="0.7"/>
+              <text x="55" y="20" text-anchor="middle" fill="white" font-family="SF Mono, Consolas, monospace" font-size="9">w&#x2082;,&#x2081; ("Paris")</text>
+              <rect x="0" y="32" width="110" height="22" rx="3" fill="#27AE60" opacity="0.7"/>
+              <text x="55" y="47" text-anchor="middle" fill="white" font-family="SF Mono, Consolas, monospace" font-size="9">w&#x2082;,&#x2082; ("runs")</text>
+              <rect x="0" y="59" width="110" height="22" rx="3" fill="#27AE60" opacity="0.7"/>
+              <text x="55" y="74" text-anchor="middle" fill="white" font-family="SF Mono, Consolas, monospace" font-size="9">w&#x2082;,&#x2083; ("cat")</text>
+              <text x="55" y="98" text-anchor="middle" fill="#aaa" font-family="Helvetica Neue, Arial, sans-serif" font-size="14">...</text>
+              <rect x="0" y="110" width="110" height="22" rx="3" fill="#27AE60" opacity="0.7"/>
+              <text x="55" y="125" text-anchor="middle" fill="white" font-family="SF Mono, Consolas, monospace" font-size="9">w&#x2082;,d_ff</text>
+            </g>
+
+            <!-- Output sum -->
+            <line x1="530" y1="145" x2="570" y2="145" stroke="#555" stroke-width="1.5" marker-end="url(#arrowMem)"/>
+            <text x="550" y="135" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="9" fill="#888">weighted sum</text>
+
+            <rect x="580" y="120" width="90" height="55" rx="8" fill="#8E44AD" opacity="0.85"/>
+            <text x="625" y="145" text-anchor="middle" fill="white" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" font-weight="600">FFN(x)</text>
+            <text x="625" y="165" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-family="SF Mono, Consolas, monospace" font-size="8">mostly "Paris"</text>
+
+            <!-- Connection lines between keys-activations and activations-values -->
+            <line x1="240" y1="86" x2="285" y2="86" stroke="#888" stroke-width="0.8"/>
+            <line x1="240" y1="113" x2="285" y2="113" stroke="#888" stroke-width="0.8"/>
+            <line x1="240" y1="140" x2="285" y2="140" stroke="#888" stroke-width="0.8"/>
+            <line x1="240" y1="181" x2="285" y2="181" stroke="#888" stroke-width="0.8"/>
+
+            <line x1="345" y1="86" x2="400" y2="86" stroke="#888" stroke-width="0.8"/>
+            <line x1="345" y1="113" x2="400" y2="113" stroke="#888" stroke-width="0.8"/>
+            <line x1="345" y1="140" x2="400" y2="140" stroke="#888" stroke-width="0.8"/>
+            <line x1="345" y1="181" x2="400" y2="181" stroke="#888" stroke-width="0.8"/>
+
+            <!-- Bottom annotation -->
+            <rect x="100" y="255" width="500" height="80" rx="8" fill="#F4ECF7" stroke="#D2B4DE" stroke-width="1"/>
+            <text x="350" y="278" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="11" fill="#8E44AD" font-weight="700">Analogy to Attention</text>
+            <text x="350" y="298" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="10" fill="#555">Attention: query matches context keys &#x2192; retrieves from context values</text>
+            <text x="350" y="315" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="10" fill="#555">FFN: input matches learned keys (W&#x2081; rows) &#x2192; retrieves learned values (W&#x2082; cols)</text>
+            <text x="350" y="330" text-anchor="middle" font-family="Helvetica Neue, Arial, sans-serif" font-size="10" fill="#888" font-style="italic">FFN = static knowledge memory; Attention = dynamic context lookup</text>
+          </svg>
+          <div class="caption">Figure 4.4 &mdash; FFN as key-value memory (Geva et al., 2021). Each hidden neuron acts as a key-value pair: keys match input patterns, values inject corresponding information.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================
+         SECTION 4.3 — ENGINEERING
+         ============================================================ -->
+    <section id="engineering">
+      <h2>4.3 Engineering</h2>
+
+      <!-- 4.3.1 Standard FFN Implementation -->
+      <h3 id="standard-ffn-impl">4.3.1 Standard FFN Module</h3>
+
+      <p>
+        The standard position-wise feed-forward network as described in
+        "Attention Is All You Need." We implement it with configurable activation and
+        optional dropout for regularization.
+      </p>
+
+      <div class="code-header">
+        <span>Python &mdash; standard_ffn.py</span>
+      </div>
+      <pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import Optional
+
+
+class PositionWiseFFN(nn.Module):
+    """Standard position-wise feed-forward network.
+
+    FFN(x) = W2 * activation(W1 * x + b1) + b2
+
+    Args:
+        d_model: Input/output dimension (e.g. 512).
+        d_ff: Hidden (expanded) dimension (e.g. 2048).
+        activation: One of 'relu', 'gelu', 'silu'.
+        dropout: Dropout probability applied after the activation.
+        bias: Whether to include bias terms in linear layers.
+    """
+
+    def __init__(
+        self,
+        d_model: int = 512,
+        d_ff: int = 2048,
+        activation: str = "relu",
+        dropout: float = 0.1,
+        bias: bool = True,
+    ):
+        super().__init__()
+        self.w1 = nn.Linear(d_model, d_ff, bias=bias)     # Expansion
+        self.w2 = nn.Linear(d_ff, d_model, bias=bias)      # Compression
+        self.dropout = nn.Dropout(dropout)
+
+        # Select activation function
+        activations = {
+            "relu": F.relu,
+            "gelu": F.gelu,
+            "silu": F.silu,
+        }
+        if activation not in activations:
+            raise ValueError(
+                f"Unknown activation '{activation}'. "
+                f"Choose from {list(activations.keys())}"
+            )
+        self.activation = activations[activation]
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply position-wise FFN to each token independently.
+
+        Args:
+            x: Input tensor of shape (batch, seq_len, d_model).
+
+        Returns:
+            Output tensor of shape (batch, seq_len, d_model).
+        """
+        # x:        (batch, seq_len, d_model)
+        # hidden:   (batch, seq_len, d_ff)       -- expansion
+        # output:   (batch, seq_len, d_model)    -- compression
+        hidden = self.activation(self.w1(x))
+        hidden = self.dropout(hidden)
+        output = self.w2(hidden)
+        return output
+
+
+# ---- Quick test ----
+if __name__ == "__main__":
+    batch, seq_len, d_model, d_ff = 2, 10, 512, 2048
+    ffn = PositionWiseFFN(d_model, d_ff, activation="gelu")
+    x = torch.randn(batch, seq_len, d_model)
+    out = ffn(x)
+    print(f"Input:  {x.shape}")   # (2, 10, 512)
+    print(f"Output: {out.shape}") # (2, 10, 512)
+    total_params = sum(p.numel() for p in ffn.parameters())
+    print(f"Parameters: {total_params:,}")  # ~2.1M</code></pre>
+
+      <!-- 4.3.2 SwiGLU FFN Implementation -->
+      <h3 id="swiglu-impl">4.3.2 SwiGLU FFN Module</h3>
+
+      <p>
+        The SwiGLU variant used in LLaMA, Mistral, and most modern LLMs. Note the three
+        weight matrices and the reduced \(d_{\text{ff}}\) to match the parameter budget
+        of the standard FFN.
+      </p>
+
+      <div class="code-header">
+        <span>Python &mdash; swiglu_ffn.py</span>
+      </div>
+      <pre><code class="language-python">import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+
+
+class SwiGLUFFN(nn.Module):
+    """SwiGLU feed-forward network (Shazeer, 2020).
+
+    FFN_SwiGLU(x) = (SiLU(x @ W_gate) * (x @ W_up)) @ W_down
+
+    Uses three weight matrices:
+      - W_gate (d_model -> d_ff): produces gate activations
+      - W_up   (d_model -> d_ff): produces value activations
+      - W_down (d_ff -> d_model): projects back down
+
+    The hidden dimension d_ff is typically set to (2/3) * 4 * d_model
+    (rounded to a multiple of 256 for hardware efficiency) to keep
+    the total parameter count comparable to a standard FFN.
+
+    Args:
+        d_model: Input/output dimension.
+        d_ff: Hidden dimension. If None, uses (2/3)*4*d_model rounded
+              to the nearest multiple of `multiple_of`.
+        dropout: Dropout probability.
+        bias: Whether to use bias in linear layers (usually False
+              in modern LLMs).
+        multiple_of: Round d_ff to this multiple for GPU efficiency.
+    """
+
+    def __init__(
+        self,
+        d_model: int = 512,
+        d_ff: int | None = None,
+        dropout: float = 0.0,
+        bias: bool = False,
+        multiple_of: int = 256,
+    ):
+        super().__init__()
+
+        # Compute hidden dimension if not provided
+        if d_ff is None:
+            d_ff = int(2 * (4 * d_model) / 3)
+            # Round up to nearest multiple for hardware efficiency
+            d_ff = multiple_of * ((d_ff + multiple_of - 1) // multiple_of)
+
+        self.d_model = d_model
+        self.d_ff = d_ff
+
+        # Three projection matrices
+        self.w_gate = nn.Linear(d_model, d_ff, bias=bias)  # Gate
+        self.w_up   = nn.Linear(d_model, d_ff, bias=bias)  # Value/Up
+        self.w_down = nn.Linear(d_ff, d_model, bias=bias)  # Down
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply SwiGLU FFN.
+
+        Args:
+            x: (batch, seq_len, d_model)
+
+        Returns:
+            (batch, seq_len, d_model)
+        """
+        # Gate path:  SiLU(x @ W_gate)       -> (batch, seq, d_ff)
+        # Value path: x @ W_up               -> (batch, seq, d_ff)
+        # Combined:   gate * value            -> (batch, seq, d_ff)
+        # Output:     combined @ W_down       -> (batch, seq, d_model)
+        gate = F.silu(self.w_gate(x))
+        value = self.w_up(x)
+        hidden = gate * value  # element-wise product
+        hidden = self.dropout(hidden)
+        output = self.w_down(hidden)
+        return output
+
+
+# ---- Quick test ----
+if __name__ == "__main__":
+    d_model = 512
+    ffn = SwiGLUFFN(d_model=d_model)
+    print(f"d_model={d_model}, d_ff={ffn.d_ff}")
+
+    x = torch.randn(2, 10, d_model)
+    out = ffn(x)
+    print(f"Input:  {x.shape}")
+    print(f"Output: {out.shape}")
+
+    total = sum(p.numel() for p in ffn.parameters())
+    print(f"Parameters: {total:,}")
+    print(f"  w_gate: {ffn.w_gate.weight.numel():,}")
+    print(f"  w_up:   {ffn.w_up.weight.numel():,}")
+    print(f"  w_down: {ffn.w_down.weight.numel():,}")</code></pre>
+
+      <!-- 4.3.3 Activation Comparison -->
+      <h3 id="activation-comparison">4.3.3 Activation Comparison Code</h3>
+
+      <p>
+        A self-contained script that plots all three activation functions and their
+        derivatives side by side, matching the SVG diagram above but with
+        pixel-accurate numerical evaluation.
+      </p>
+
+      <div class="code-header">
+        <span>Python &mdash; plot_activations.py</span>
+      </div>
+      <pre><code class="language-python">import torch
+import matplotlib.pyplot as plt
+import numpy as np
+
+def plot_activations():
+    """Plot ReLU, GELU, and SiLU with their derivatives."""
+    x = torch.linspace(-5, 5, 1000, requires_grad=False)
+
+    # --- Compute activation values ---
+    relu_y = torch.relu(x)
+    gelu_y = torch.nn.functional.gelu(x)
+    silu_y = torch.nn.functional.silu(x)
+
+    # --- Compute derivatives via autograd ---
+    def derivative(fn, x_vals):
+        x_vals = x_vals.clone().requires_grad_(True)
+        y = fn(x_vals)
+        y.sum().backward()
+        return x_vals.grad.detach()
+
+    relu_dy = derivative(torch.relu, x)
+    gelu_dy = derivative(torch.nn.functional.gelu, x)
+    silu_dy = derivative(torch.nn.functional.silu, x)
+
+    x_np = x.numpy()
+
+    fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    fig.suptitle("Activation Functions in Transformers", fontsize=14, y=0.95)
+
+    colors = {"ReLU": "#E74C3C", "GELU": "#3498DB", "SiLU": "#2ECC71"}
+
+    # Top: function values
+    ax = axes[0]
+    ax.plot(x_np, relu_y.numpy(), color=colors["ReLU"], lw=2.5, label="ReLU")
+    ax.plot(x_np, gelu_y.numpy(), color=colors["GELU"], lw=2.5, label="GELU")
+    ax.plot(x_np, silu_y.numpy(), color=colors["SiLU"], lw=2.5, label="SiLU/Swish")
+    ax.axhline(0, color="gray", lw=0.5)
+    ax.axvline(0, color="gray", lw=0.5)
+    ax.set_ylabel("f(x)")
+    ax.set_ylim(-1.5, 5.5)
+    ax.legend(loc="upper left")
+    ax.set_title("Function Values")
+    ax.grid(True, alpha=0.3)
+
+    # Bottom: derivatives
+    ax = axes[1]
+    ax.plot(x_np, relu_dy.numpy(), color=colors["ReLU"], lw=2.5, label="ReLU'")
+    ax.plot(x_np, gelu_dy.numpy(), color=colors["GELU"], lw=2.5, label="GELU'")
+    ax.plot(x_np, silu_dy.numpy(), color=colors["SiLU"], lw=2.5, label="SiLU'")
+    ax.axhline(0, color="gray", lw=0.5)
+    ax.axhline(1, color="gray", lw=0.5, ls="--")
+    ax.axvline(0, color="gray", lw=0.5)
+    ax.set_ylabel("f'(x)")
+    ax.set_xlabel("x")
+    ax.set_ylim(-0.3, 1.5)
+    ax.legend(loc="upper left")
+    ax.set_title("Derivatives")
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig("activation_comparison.png", dpi=150, bbox_inches="tight")
+    plt.show()
+    print("Saved to activation_comparison.png")
+
+
+if __name__ == "__main__":
+    plot_activations()</code></pre>
+
+      <!-- 4.3.4 Parameter Count Calculator -->
+      <h3 id="param-calculator">4.3.4 Parameter Count Calculator</h3>
+
+      <p>
+        A utility function to compute the total number of FFN parameters for both
+        standard and SwiGLU architectures across all layers.
+      </p>
+
+      <div class="code-header">
+        <span>Python &mdash; param_calculator.py</span>
+      </div>
+      <pre><code class="language-python">def ffn_param_count(
+    d_model: int,
+    d_ff: int | None = None,
+    n_layers: int = 12,
+    variant: str = "standard",
+    bias: bool = True,
+    multiple_of: int = 256,
+) -> dict:
+    """Calculate total FFN parameter count.
+
+    Args:
+        d_model: Model dimension (e.g. 512, 768, 4096).
+        d_ff: FFN hidden dimension. If None, auto-computed:
+              - standard: 4 * d_model
+              - swiglu: (2/3) * 4 * d_model (rounded up)
+        n_layers: Number of Transformer layers.
+        variant: 'standard' or 'swiglu'.
+        bias: Whether bias terms are included.
+        multiple_of: Round d_ff to this for hardware efficiency.
+
+    Returns:
+        Dictionary with parameter breakdown.
+    """
+    if variant == "standard":
+        if d_ff is None:
+            d_ff = 4 * d_model
+
+        # W1: (d_model, d_ff), W2: (d_ff, d_model)
+        weight_params = 2 * d_model * d_ff
+        bias_params = (d_ff + d_model) if bias else 0
+        per_layer = weight_params + bias_params
+        n_matrices = 2
+
+    elif variant == "swiglu":
+        if d_ff is None:
+            d_ff = int(2 * (4 * d_model) / 3)
+            d_ff = multiple_of * ((d_ff + multiple_of - 1) // multiple_of)
+
+        # W_gate: (d_model, d_ff), W_up: (d_model, d_ff), W_down: (d_ff, d_model)
+        weight_params = 3 * d_model * d_ff
+        bias_params = (2 * d_ff + d_model) if bias else 0
+        per_layer = weight_params + bias_params
+        n_matrices = 3
+
+    else:
+        raise ValueError(f"Unknown variant: {variant}")
+
+    total = per_layer * n_layers
+
+    return {
+        "variant": variant,
+        "d_model": d_model,
+        "d_ff": d_ff,
+        "n_layers": n_layers,
+        "n_matrices": n_matrices,
+        "bias": bias,
+        "params_per_layer": per_layer,
+        "total_params": total,
+        "total_millions": round(total / 1e6, 2),
+    }
+
+
+def print_comparison(d_model: int, n_layers: int):
+    """Print a comparison table for standard vs SwiGLU."""
+    std = ffn_param_count(d_model, n_layers=n_layers, variant="standard", bias=True)
+    swi = ffn_param_count(d_model, n_layers=n_layers, variant="swiglu", bias=False)
+
+    print(f"{'FFN Parameter Comparison':=^60}")
+    print(f"  d_model = {d_model}, n_layers = {n_layers}")
+    print(f"{'':-^60}")
+    print(f"  {'Metric':<25} {'Standard':>14} {'SwiGLU':>14}")
+    print(f"  {'d_ff':<25} {std['d_ff']:>14,} {swi['d_ff']:>14,}")
+    print(f"  {'Weight matrices':<25} {std['n_matrices']:>14} {swi['n_matrices']:>14}")
+    print(f"  {'Params/layer':<25} {std['params_per_layer']:>14,} {swi['params_per_layer']:>14,}")
+    print(f"  {'Total params':<25} {std['total_params']:>14,} {swi['total_params']:>14,}")
+    print(f"  {'Total (millions)':<25} {std['total_millions']:>14.2f} {swi['total_millions']:>14.2f}")
+    print(f"{'':=^60}")
+
+
+if __name__ == "__main__":
+    # Base Transformer
+    print_comparison(d_model=512, n_layers=6)
+    print()
+    # GPT-2 scale
+    print_comparison(d_model=768, n_layers=12)
+    print()
+    # LLaMA-7B scale
+    print_comparison(d_model=4096, n_layers=32)</code></pre>
+
+      <div class="callout implementation">
+        <div class="callout-title">Implementation Notes</div>
+        <div class="callout-body">
+          <ul>
+            <li>Modern LLMs typically set <code>bias=False</code> in FFN layers (LLaMA, Mistral, Gemma).</li>
+            <li>The <code>multiple_of</code> rounding ensures \(d_{\text{ff}}\) is friendly to GPU tensor core sizes (typically multiples of 64 or 256).</li>
+            <li>In practice, <code>nn.Linear</code> stores weights as \((d_{\text{out}}, d_{\text{in}})\), so \(\mathbf{W}_1\) is stored as shape <code>(d_ff, d_model)</code>.</li>
+            <li>Some implementations fuse <code>w_gate</code> and <code>w_up</code> into a single <code>(d_model, 2*d_ff)</code> matrix and split the output &mdash; this is more memory-efficient on GPUs.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================
+         SECTION 4.4 — GOING DEEPER
+         ============================================================ -->
+    <section id="going-deeper">
+      <h2>4.4 Going Deeper</h2>
+
+      <h3>Sparse Mixture of Experts (MoE)</h3>
+      <p>
+        Instead of one monolithic FFN, <strong>Mixture of Experts</strong> replaces the
+        single FFN with \(N\) "expert" FFNs and a learned router that selects a small
+        subset (typically top-2) of experts for each token. This dramatically increases
+        the total parameter count without proportionally increasing compute, since only
+        a few experts activate per token. MoE is used in Switch Transformer, Mixtral, and
+        Gemini.
+        <a href="modern-variants.html" class="cross-link modern">Modern Variants</a>
+      </p>
+
+      <h3>Mechanistic Interpretability</h3>
+      <p>
+        Research in mechanistic interpretability has shown that individual FFN neurons
+        often encode interpretable concepts. Specific neurons in GPT-2 activate for
+        concepts like "the word after a period should be capitalized" or "this token
+        refers to a city." The key-value memory perspective (Section 4.2.4) provides
+        a theoretical framework for understanding <em>why</em> individual neurons have
+        meaning: each neuron's key (row of \(\mathbf{W}_1\)) defines what it detects,
+        and its value (column of \(\mathbf{W}_2\)) defines what it contributes.
+      </p>
+
+      <h3>Knowledge Editing</h3>
+      <p>
+        Since FFN layers store factual knowledge, researchers have developed methods to
+        <strong>edit specific facts</strong> by directly modifying FFN weight matrices.
+        Techniques like ROME (Rank-One Model Editing) and MEMIT target specific key-value
+        pairs in the FFN to change what the model "knows" without full retraining.
+      </p>
+
+      <h3>Further Reading</h3>
+      <ul>
+        <li>Vaswani et al. (2017) &mdash; <em>Attention Is All You Need</em> &mdash; original FFN definition</li>
+        <li>Shazeer (2020) &mdash; <em>GLU Variants Improve Transformer</em> &mdash; SwiGLU and activation comparisons</li>
+        <li>Geva et al. (2021) &mdash; <em>Transformer Feed-Forward Layers Are Key-Value Memories</em></li>
+        <li>Meng et al. (2022) &mdash; <em>Locating and Editing Factual Associations in GPT</em> (ROME)</li>
+        <li>Fedus et al. (2022) &mdash; <em>Switch Transformers: Scaling to Trillion Parameter Models</em></li>
+      </ul>
+
+      <h3>Cross-References</h3>
+      <p>
+        <a href="self-attention.html" class="cross-link attention">Self-Attention</a>
+        <a href="normalization.html" class="cross-link norm">Normalization</a>
+        <a href="encoder-decoder.html" class="cross-link architecture">Encoder-Decoder</a>
+        <a href="modern-variants.html" class="cross-link modern">Modern Variants</a>
+        <a href="training.html" class="cross-link training">Training</a>
+      </p>
+    </section>
+
+    <!-- ============================================================
+         VIDEO RESOURCE
+         ============================================================ -->
+    <section id="video">
+      <h2>Video Resource</h2>
+      <div class="video-embed">
+        <iframe src="https://www.youtube.com/embed/2V3Uduw1zwQ" allowfullscreen></iframe>
+        <div class="video-caption">Umar Jamil &mdash; LLaMA explained (covers SwiGLU FFN in detail)</div>
+      </div>
+    </section>
+
+    <!-- ============================================================
+         FOOTER NAVIGATION
+         ============================================================ -->
+    <footer class="page-footer">
+      <nav class="page-nav">
+        <a href="normalization.html">&larr; Previous: Normalization</a>
+        <a href="encoder-decoder.html">Next: Encoder-Decoder &rarr;</a>
+      </nav>
+      <p style="text-align:center; font-size:0.82rem; color:var(--text-muted); margin-top:12px;">
+        Transformer Architecture Deep Dive &mdash; Page 4 of 8
+      </p>
+    </footer>
+
+  </main>
+</div>
+
+<!-- ============================================================
+     SCRIPTS
+     ============================================================ -->
+<script>
+  // ---- Theme Toggle ----
+  const toggle = document.querySelector('.theme-toggle');
+  toggle.addEventListener('click', () => {
+    const current = document.documentElement.getAttribute('data-theme');
+    document.documentElement.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+    toggle.textContent = current === 'dark' ? '\u{1F319}' : '\u{2600}\u{FE0F}';
+  });
+
+  // ---- Sidebar Active Link Tracking ----
+  (function() {
+    const sections = document.querySelectorAll('section[id], h3[id]');
+    const sidebarLinks = document.querySelectorAll('.sidebar a');
+
+    function updateActive() {
+      let current = '';
+      sections.forEach(section => {
+        const rect = section.getBoundingClientRect();
+        if (rect.top <= 120) {
+          current = section.getAttribute('id');
+        }
+      });
+      sidebarLinks.forEach(link => {
+        link.classList.remove('active');
+        if (link.getAttribute('href') === '#' + current) {
+          link.classList.add('active');
+        }
+      });
+    }
+
+    window.addEventListener('scroll', updateActive, { passive: true });
+    updateActive();
+  })();
+</script>
+
+</body>
+</html>

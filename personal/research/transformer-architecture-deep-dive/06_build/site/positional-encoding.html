@@ -1,0 +1,564 @@
+<\!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Positional Encoding Deep Dive — Transformer Deep Dive</title>
+<link rel="stylesheet" href="style.css">
+<script>window.MathJax = {tex: {inlineMath: [['$','$'],['\\(','\\)']]}};</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css">
+<style>
+/* Page-specific animations */
+@keyframes rotate2d {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@keyframes pulseGlow {
+  0%, 100% { filter: drop-shadow(0 0 3px rgba(142,68,173,0.3)); }
+  50% { filter: drop-shadow(0 0 10px rgba(142,68,173,0.7)); }
+}
+.rotate-anim { animation: rotate2d 8s linear infinite; transform-origin: center; }
+.pulse-anim { animation: pulseGlow 2s ease-in-out infinite; }
+/* Interactive frequency slider */
+.freq-demo { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 12px; padding: 24px; margin: 24px 0; }
+.freq-demo canvas { width: 100%; height: 150px; border-radius: 8px; background: var(--bg-primary); }
+.freq-demo input[type=range] { width: 100%; margin: 12px 0; }
+.freq-demo label { font-family: var(--font-heading); font-size: 0.85rem; color: var(--text-secondary); }
+/* RoPE animation */
+.rope-demo { position: relative; display: flex; justify-content: center; align-items: center; min-height: 320px; }
+</style>
+</head>
+<body>
+
+<nav class="top-nav">
+  <a href="index.html" class="nav-brand">Transformer Deep Dive</a>
+  <div class="nav-links">
+    <a href="index.html">Home</a>
+    <a href="self-attention.html">Self-Attention</a>
+    <a href="positional-encoding.html" class="active">Positional Encoding</a>
+    <a href="normalization.html">Normalization</a>
+    <a href="ffn-activations.html">FFN & Activations</a>
+    <a href="encoder-decoder.html">Encoder-Decoder</a>
+    <a href="training.html">Training</a>
+    <a href="modern-variants.html">Modern Variants</a>
+  </div>
+  <button class="theme-toggle" aria-label="Toggle theme">🌙</button>
+</nav>
+
+<div class="page-wrapper">
+<aside class="sidebar">
+  <h3>On This Page</h3>
+  <ul>
+    <li><a href="#intuition">2.1 Intuition</a>
+      <ul>
+        <li><a href="#bag-of-words">Bag-of-Words Problem</a></li>
+        <li><a href="#permutation">Permutation Invariance</a></li>
+        <li><a href="#properties">Desired Properties</a></li>
+      </ul>
+    </li>
+    <li><a href="#formalism">2.2 Formalism</a>
+      <ul>
+        <li><a href="#sinusoidal">Sinusoidal PE</a></li>
+        <li><a href="#learned">Learned PE</a></li>
+        <li><a href="#relative">Relative PE</a></li>
+        <li><a href="#rope">RoPE (Deep Dive)</a></li>
+        <li><a href="#alibi">ALiBi</a></li>
+      </ul>
+    </li>
+    <li><a href="#engineering">2.3 Engineering</a>
+      <ul>
+        <li><a href="#impl-sin">Sinusoidal PE</a></li>
+        <li><a href="#impl-rope">RoPE Implementation</a></li>
+        <li><a href="#extrapolation">Length Extrapolation</a></li>
+      </ul>
+    </li>
+    <li><a href="#going-deeper">2.4 Going Deeper</a></li>
+  </ul>
+</aside>
+
+<main class="main-content">
+
+<div class="page-header">
+  <div class="breadcrumb"><a href="index.html">Home</a> / Positional Encoding Deep Dive</div>
+  <h1>Positional Encoding Deep Dive</h1>
+  <p class="subtitle">Why position matters, how sinusoidal encodings work, and why RoPE (Rotary Position Embeddings) became the standard in modern LLMs — explained with geometric intuition and from first principles.</p>
+</div>
+
+<\!-- ==================== INTUITION ==================== -->
+<h2 id="intuition">2.1 Intuition Layer</h2>
+<div class="layer-indicator"><span class="layer-badge intuition">Intuition</span></div>
+
+<h3 id="bag-of-words">2.1.1 The Bag-of-Words Problem</h3>
+
+<p>Here's a surprising fact: <a href="self-attention.html" class="cross-link attention">self-attention →</a> treats its input as a <strong>set</strong>, not a sequence. Without any position information, these two sentences produce identical attention outputs:</p>
+
+<blockquote>
+  <p><strong>"Dog bites man"</strong> ← same attention as → <strong>"Man bites dog"</strong></p>
+</blockquote>
+
+<p>Why? Because self-attention only computes pairwise similarities between tokens. Swapping the order of tokens just swaps the order of outputs — the attention <em>weights</em> between any pair of tokens remain the same. The model literally cannot tell which word came first.</p>
+
+<h3 id="permutation">2.1.2 Permutation Invariance: A Visual Proof</h3>
+
+<p>Let's prove this formally. If we permute the input $X$ by a permutation matrix $P$ (which rearranges rows):</p>
+
+<div class="math-block">
+$$Q' = PX W^Q = PQ, \quad K' = PK, \quad V' = PV$$
+</div>
+
+<p>Then the attention output becomes:</p>
+
+<div class="math-block">
+$$\text{Attention}(Q', K', V') = \text{softmax}\left(\frac{PQ(PK)^T}{\sqrt{d_k}}\right)PV = \text{softmax}\left(\frac{PQK^TP^T}{\sqrt{d_k}}\right)PV$$
+</div>
+
+<p>Since $P$ is orthogonal ($PP^T = I$ for permutation matrices), the softmax argument becomes $P \cdot \text{softmax}(\cdot) \cdot P^T \cdot PV = P \cdot \text{Attention}(Q, K, V)$. The output is just a permuted version of the original — <strong>no new information about order has been created</strong>.</p>
+
+<div class="callout warning">
+  <div class="callout-title">This is Critical</div>
+  <div class="callout-body">Without positional encoding, a Transformer is a <strong>bag-of-words model with pairwise interactions</strong>. It knows which tokens are present and how they relate pairwise, but not their order. Position encoding breaks this symmetry.</div>
+</div>
+
+<h3 id="properties">2.1.3 What Properties Should a Good Position Encoding Have?</h3>
+
+<ol>
+  <li><strong>Unique representation</strong>: Different positions should have different encodings</li>
+  <li><strong>Relative position</strong>: The model should be able to determine the distance between any two positions</li>
+  <li><strong>Generalization</strong>: Should work for sequences longer than those seen during training</li>
+  <li><strong>Bounded values</strong>: Shouldn't dominate the semantic content of the embedding</li>
+  <li><strong>Efficiency</strong>: Should be cheap to compute, ideally without extra parameters</li>
+</ol>
+
+<\!-- ==================== FORMALISM ==================== -->
+<h2 id="formalism">2.2 Formalism Layer</h2>
+<div class="layer-indicator"><span class="layer-badge formalism">Formalism</span></div>
+
+<h3 id="sinusoidal">2.2.1 Sinusoidal Positional Encoding</h3>
+
+<p>The original Transformer uses sinusoidal functions at different frequencies:</p>
+
+<div class="math-block">
+$$PE(pos, 2i) = \sin\left(\frac{pos}{10000^{2i/d_{\text{model}}}}\right)$$
+$$PE(pos, 2i+1) = \cos\left(\frac{pos}{10000^{2i/d_{\text{model}}}}\right)$$
+</div>
+
+<p>where $pos$ is the position (0, 1, 2, ...) and $i$ is the dimension index (0, 1, 2, ..., $d_{\text{model}}/2 - 1$). Each pair of dimensions $(2i, 2i+1)$ forms a sinusoid with a different frequency.</p>
+
+<h4>Frequency Band Decomposition</h4>
+
+<p>Think of it like this: each dimension pair is a "clock" ticking at a different speed:</p>
+<ul>
+  <li>Dimensions 0-1: very fast oscillation (frequency = 1) — changes every position</li>
+  <li>Dimensions 2-3: slightly slower</li>
+  <li>...</li>
+  <li>Last dimensions: very slow oscillation (frequency = $1/10000$) — barely changes over the sequence</li>
+</ul>
+
+<p>Together, they create a unique "fingerprint" for each position — like binary encoding, but with smooth, continuous sinusoids instead of hard 0/1 bits.</p>
+
+<\!-- Interactive frequency demo -->
+<div class="freq-demo">
+  <label>Frequency band visualization — drag the slider to change position:</label>
+  <canvas id="freqCanvas"></canvas>
+  <input type="range" id="posSlider" min="0" max="100" value="10">
+  <div style="display:flex;justify-content:space-between;font-family:var(--font-code);font-size:0.8rem;color:var(--text-muted);">
+    <span>Position: <span id="posLabel">10</span></span>
+    <span>Fast frequencies (left) → Slow frequencies (right)</span>
+  </div>
+</div>
+
+<h4>Relative Position via Linear Transformation</h4>
+
+<p>A key property: for any fixed offset $k$, $PE(pos+k)$ can be written as a <strong>linear function</strong> of $PE(pos)$. Using the sin/cos addition formulas:</p>
+
+<div class="math-block">
+$$\begin{pmatrix} \sin(pos \cdot \omega + k\omega) \\ \cos(pos \cdot \omega + k\omega) \end{pmatrix} = \begin{pmatrix} \cos(k\omega) & \sin(k\omega) \\ -\sin(k\omega) & \cos(k\omega) \end{pmatrix} \begin{pmatrix} \sin(pos \cdot \omega) \\ \cos(pos \cdot \omega) \end{pmatrix}$$
+</div>
+
+<p>The matrix on the right is a <strong>rotation matrix</strong>\! This means moving from position $pos$ to position $pos+k$ corresponds to a rotation in 2D — and crucially, this rotation depends only on the <em>offset</em> $k$, not on the absolute position. This is the seed idea that leads to RoPE.</p>
+
+<h3 id="learned">2.2.2 Learned Positional Embeddings</h3>
+
+<p>A simpler alternative: just use a trainable embedding table $E \in \mathbb{R}^{L_{\max} \times d_{\text{model}}}$ where $L_{\max}$ is the maximum sequence length. The position embedding for position $pos$ is simply $E[pos]$ — a learned vector.</p>
+
+<p>Used in BERT ($L_{\max}=512$) and GPT-2 ($L_{\max}=1024$).</p>
+
+<table>
+  <thead><tr><th>Property</th><th>Sinusoidal</th><th>Learned</th></tr></thead>
+  <tbody>
+    <tr><td>Parameters</td><td>None (computed)</td><td>$L_{\max} \times d_{\text{model}}$</td></tr>
+    <tr><td>Length generalization</td><td>Theoretically possible</td><td>Hard-capped at $L_{\max}$</td></tr>
+    <tr><td>Quality</td><td>Similar (Vaswani et al.)</td><td>Similar</td></tr>
+    <tr><td>Flexibility</td><td>Fixed formula</td><td>Can learn task-specific patterns</td></tr>
+  </tbody>
+</table>
+
+<h3 id="relative">2.2.3 Relative Position Encodings</h3>
+
+<p>Instead of encoding absolute position, encode the <em>relative distance</em> between tokens. Shaw et al. (2018) add a learnable bias $a_{ij}$ to the attention score based on the clipped relative distance $\text{clip}(j - i, -k, k)$.</p>
+
+<p>T5 uses <strong>bucketed log-scale distances</strong>: nearby positions get fine-grained buckets, distant positions share coarser buckets. This is more parameter-efficient than learning a separate bias for every possible distance.</p>
+
+<h3 id="rope">2.2.4 Rotary Position Embedding (RoPE) — Deep Dive</h3>
+
+<div class="callout key-idea">
+  <div class="callout-title">Why RoPE Matters</div>
+  <div class="callout-body">RoPE is used in virtually every modern LLM: LLaMA, Mistral, Gemma, Qwen, PaLM, GPT-NeoX. Understanding it is essential for understanding modern Transformers.</div>
+</div>
+
+<h4>Step 1: The Goal</h4>
+
+<p>We want a position encoding function $f$ such that the dot product of position-encoded queries and keys depends only on their <strong>content</strong> and <strong>relative position</strong>:</p>
+
+<div class="math-block">
+$$\langle f(\mathbf{q}, m), f(\mathbf{k}, n) \rangle = g(\mathbf{q}, \mathbf{k}, m - n)$$
+</div>
+
+<p>where $m, n$ are absolute positions. The inner product should be a function $g$ that depends on $\mathbf{q}$, $\mathbf{k}$, and the <em>relative distance</em> $m-n$ — not on the absolute positions individually.</p>
+
+<h4>Step 2: The 2D Insight</h4>
+
+<p>Consider just 2 dimensions of $\mathbf{q}$ and $\mathbf{k}$. The key insight: <strong>2D rotation naturally encodes relative position</strong>.</p>
+
+<p>A 2D rotation by angle $\theta$:</p>
+
+<div class="math-block">
+$$R(\theta) = \begin{pmatrix} \cos\theta & -\sin\theta \\ \sin\theta & \cos\theta \end{pmatrix}$$
+</div>
+
+<p>Encode position $m$ by rotating the vector by $m \cdot \theta$:</p>
+
+<div class="math-block">
+$$f(\mathbf{x}, m) = R(m\theta) \cdot \mathbf{x}$$
+</div>
+
+<p>Now compute the dot product of two rotated vectors:</p>
+
+<div class="math-block">
+$$\langle R(m\theta)\mathbf{q},\; R(n\theta)\mathbf{k} \rangle = \mathbf{q}^T R(m\theta)^T R(n\theta) \mathbf{k} = \mathbf{q}^T R((n-m)\theta) \mathbf{k}$$
+</div>
+
+<p>Because $R(\alpha)^T R(\beta) = R(\beta - \alpha)$ (rotation matrices compose by adding angles). <strong>The dot product depends only on the relative position $(n-m)$\!</strong> This is exactly the property we wanted.</p>
+
+<\!-- Animated RoPE visualization -->
+<div class="diagram-container rope-demo">
+<svg viewBox="0 0 500 300" xmlns="http://www.w3.org/2000/svg" style="max-width:500px;">
+  <\!-- Coordinate axes -->
+  <line x1="250" y1="20" x2="250" y2="280" stroke="#ddd" stroke-width="1"/>
+  <line x1="70" y1="150" x2="430" y2="150" stroke="#ddd" stroke-width="1"/>
+  <\!-- Vector q at position m -->
+  <g id="vecQ">
+    <line x1="250" y1="150" x2="380" y2="80" stroke="#4A90D9" stroke-width="2.5" marker-end="url(#arrowB)"/>
+    <text x="390" y="75" fill="#4A90D9" font-family="Helvetica Neue,sans-serif" font-size="13" font-weight="600">q (pos m)</text>
+  </g>
+  <\!-- Vector k at position n -->
+  <g id="vecK">
+    <line x1="250" y1="150" x2="350" y2="230" stroke="#E67E22" stroke-width="2.5" marker-end="url(#arrowO)"/>
+    <text x="360" y="240" fill="#E67E22" font-family="Helvetica Neue,sans-serif" font-size="13" font-weight="600">k (pos n)</text>
+  </g>
+  <\!-- Angle arc for q -->
+  <path d="M 300,150 A 50,50 0 0,0 280,120" fill="none" stroke="#4A90D9" stroke-width="1.5" stroke-dasharray="4,2"/>
+  <text x="295" y="125" fill="#4A90D9" font-size="11" font-family="Helvetica Neue,sans-serif">m·θ</text>
+  <\!-- Angle arc for k -->
+  <path d="M 300,150 A 50,50 0 0,1 290,190" fill="none" stroke="#E67E22" stroke-width="1.5" stroke-dasharray="4,2"/>
+  <text x="300" y="195" fill="#E67E22" font-size="11" font-family="Helvetica Neue,sans-serif">n·θ</text>
+  <\!-- Relative angle -->
+  <path d="M 280,120 A 70,70 0 0,1 290,190" fill="none" stroke="#8E44AD" stroke-width="2.5"/>
+  <text x="215" y="160" fill="#8E44AD" font-size="13" font-weight="700" font-family="Helvetica Neue,sans-serif">(m−n)·θ</text>
+  <\!-- Center dot -->
+  <circle cx="250" cy="150" r="4" fill="#333"/>
+  <\!-- Caption -->
+  <text x="250" y="295" text-anchor="middle" fill="#888" font-size="11" font-family="Helvetica Neue,sans-serif">The dot product ⟨R(mθ)q, R(nθ)k⟩ depends only on the angle difference (m-n)·θ</text>
+  <defs>
+    <marker id="arrowB" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#4A90D9"/></marker>
+    <marker id="arrowO" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#E67E22"/></marker>
+  </defs>
+</svg>
+<div class="caption">Figure 2.1: RoPE in 2D. Vectors q and k are rotated by their respective positions (m·θ and n·θ). Their dot product depends only on the relative angle (m−n)·θ, encoding relative position naturally.</div>
+</div>
+
+<h4>Step 3: Extend to $d$ Dimensions</h4>
+
+<p>For a $d$-dimensional vector, pair up consecutive dimensions: $(0,1), (2,3), \ldots, (d-2, d-1)$. Apply a 2D rotation to each pair with a <strong>different frequency</strong>:</p>
+
+<div class="math-block">
+$$\theta_i = 10000^{-2i/d} \quad \text{for } i = 0, 1, \ldots, d/2-1$$
+</div>
+
+<p>This is the same frequency schedule as sinusoidal PE\! The full rotation matrix is block-diagonal:</p>
+
+<div class="math-block">
+$$R_{\Theta,m} = \begin{pmatrix}
+R(m\theta_0) & & \\
+& R(m\theta_1) & \\
+& & \ddots \\
+& & & R(m\theta_{d/2-1})
+\end{pmatrix}$$
+</div>
+
+<p>where each $R(m\theta_i)$ is a $2\times 2$ rotation matrix. The position-encoded query is $R_{\Theta,m} \cdot \mathbf{q}$.</p>
+
+<h4>Step 4: Efficient Implementation</h4>
+
+<p>We don't actually multiply by the rotation matrix (that would be expensive). Instead, use element-wise operations:</p>
+
+<div class="math-block">
+$$f(\mathbf{x}, m) = \mathbf{x} \odot \cos(m\boldsymbol{\theta}) + \text{rotate\_half}(\mathbf{x}) \odot \sin(m\boldsymbol{\theta})$$
+</div>
+
+<p>where $\text{rotate\_half}$ swaps and negates pairs: $[x_0, x_1, x_2, x_3, \ldots] \to [-x_1, x_0, -x_3, x_2, \ldots]$.</p>
+
+<p>This is just 2 element-wise multiplications and an addition — extremely efficient\!</p>
+
+<h4>Step 5: Why RoPE Dominates</h4>
+
+<table>
+  <thead><tr><th>Property</th><th>RoPE</th><th>Sinusoidal</th><th>Learned</th><th>ALiBi</th></tr></thead>
+  <tbody>
+    <tr><td>Relative position</td><td>Natural</td><td>Via linear transform</td><td>No</td><td>Via linear bias</td></tr>
+    <tr><td>Extra parameters</td><td>None</td><td>None</td><td>$L_{\max} \times d$</td><td>None</td></tr>
+    <tr><td>Where applied</td><td>To Q, K only</td><td>Added to input</td><td>Added to input</td><td>To attention scores</td></tr>
+    <tr><td>KV cache compatible</td><td>Yes</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+    <tr><td>Length extrapolation</td><td>With scaling</td><td>Poor in practice</td><td>Impossible</td><td>Strong</td></tr>
+    <tr><td>Modern LLM adoption</td><td>Dominant</td><td>Rare</td><td>Rare</td><td>Some (BLOOM, MPT)</td></tr>
+  </tbody>
+</table>
+
+<h3 id="alibi">2.2.5 ALiBi: Attention with Linear Biases</h3>
+
+<p>ALiBi (Press et al., 2022) takes a radically different approach: <strong>no position embedding at all</strong>. Instead, add a linear penalty to attention scores based on distance:</p>
+
+<div class="math-block">
+$$\text{score}_{ij} = \mathbf{q}_i \cdot \mathbf{k}_j - m \cdot |i - j|$$
+</div>
+
+<p>where $m$ is a per-head slope. The slopes form a geometric sequence: $m_h = 2^{-8h/H}$ for head $h$ of $H$ total heads. Nearby tokens get small penalties; distant tokens get large penalties.</p>
+
+<p>ALiBi's strength: excellent length extrapolation. Train on 1024 tokens, test on 2048+ with minimal quality loss. Used in BLOOM and MPT.</p>
+
+<\!-- ==================== ENGINEERING ==================== -->
+<h2 id="engineering">2.3 Engineering Layer</h2>
+<div class="layer-indicator"><span class="layer-badge engineering">Engineering</span></div>
+
+<h3 id="impl-sin">2.3.1 Sinusoidal PE in PyTorch</h3>
+
+<div class="code-header"><span>Python — Sinusoidal Positional Encoding</span></div>
+<pre><code class="language-python">import torch
+import torch.nn as nn
+import math
+
+class SinusoidalPE(nn.Module):
+    def __init__(self, d_model, max_len=5000):
+        super().__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len).unsqueeze(1).float()
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float() * -(math.log(10000.0) / d_model)
+        )
+        pe[:, 0::2] = torch.sin(position * div_term)  # even dimensions
+        pe[:, 1::2] = torch.cos(position * div_term)  # odd dimensions
+        self.register_buffer('pe', pe.unsqueeze(0))    # (1, max_len, d_model)
+    
+    def forward(self, x):
+        """Add positional encoding to input embeddings."""
+        return x + self.pe[:, :x.size(1)]
+
+
+# Usage
+pe = SinusoidalPE(d_model=512)
+x = torch.randn(2, 100, 512)  # batch=2, seq_len=100
+output = pe(x)  # position info added\!</code></pre>
+
+<h3 id="impl-rope">2.3.2 RoPE in PyTorch</h3>
+
+<div class="code-header"><span>Python — Rotary Position Embedding (production-quality)</span></div>
+<pre><code class="language-python">import torch
+
+def precompute_freqs_cis(dim, max_seq_len, theta=10000.0):
+    """Precompute the complex exponentials for RoPE.
+    
+    Returns cos and sin tensors of shape (max_seq_len, dim//2).
+    """
+    # Frequency for each dimension pair
+    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
+    # Position indices
+    t = torch.arange(max_seq_len).float()
+    # Outer product: (seq_len,) × (dim//2,) → (seq_len, dim//2)
+    freqs = torch.outer(t, freqs)
+    # Return cos and sin
+    return torch.cos(freqs), torch.sin(freqs)
+
+
+def rotate_half(x):
+    """Rearrange pairs: [x0, x1, x2, x3, ...] → [-x1, x0, -x3, x2, ...]"""
+    x1, x2 = x[..., ::2], x[..., 1::2]
+    return torch.stack((-x2, x1), dim=-1).flatten(-2)
+
+
+def apply_rotary_emb(x, cos, sin):
+    """Apply RoPE to queries or keys.
+    
+    Args:
+        x: (batch, heads, seq_len, dim)
+        cos, sin: (seq_len, dim//2) — precomputed frequencies
+    """
+    # Reshape cos/sin for broadcasting: (1, 1, seq_len, dim//2)
+    cos = cos[None, None, :x.shape[2], :]
+    sin = sin[None, None, :x.shape[2], :]
+    
+    # Repeat cos/sin to match full dimension
+    cos = cos.repeat(1, 1, 1, 2)  # (1, 1, seq, dim)
+    sin = sin.repeat(1, 1, 1, 2)
+    
+    # Apply rotation: x * cos + rotate_half(x) * sin
+    return x * cos + rotate_half(x) * sin
+
+
+# Example usage
+d_model, n_heads, seq_len = 512, 8, 1024
+d_k = d_model // n_heads  # 64
+
+# Precompute (do this once, cache the result)
+cos, sin = precompute_freqs_cis(d_k, seq_len)
+
+# Apply to queries and keys
+Q = torch.randn(2, n_heads, seq_len, d_k)
+K = torch.randn(2, n_heads, seq_len, d_k)
+
+Q_rot = apply_rotary_emb(Q, cos, sin)
+K_rot = apply_rotary_emb(K, cos, sin)
+
+# Verify: dot product depends on relative position
+# Two tokens at positions 5 and 10 (relative distance = 5)
+dot1 = (Q_rot[0, 0, 5] * K_rot[0, 0, 10]).sum()
+# Two tokens at positions 20 and 25 (same relative distance = 5)
+dot2 = (Q_rot[0, 0, 20] * K_rot[0, 0, 25]).sum()
+# These should be close (same relative position)\!
+print(f"Dot product (pos 5,10): {dot1:.4f}")
+print(f"Dot product (pos 20,25): {dot2:.4f}")</code></pre>
+
+<h3 id="extrapolation">2.3.3 Length Extrapolation</h3>
+
+<p>When models are tested on sequences longer than their training length, performance degrades. Different PE methods handle this differently:</p>
+
+<table>
+  <thead><tr><th>Method</th><th>Train Length</th><th>Test 2× Length</th><th>Test 4× Length</th></tr></thead>
+  <tbody>
+    <tr><td>Learned PE</td><td>Works</td><td>Fails (out of range)</td><td>Fails</td></tr>
+    <tr><td>Sinusoidal PE</td><td>Works</td><td>Degrades</td><td>Degrades badly</td></tr>
+    <tr><td>ALiBi</td><td>Works</td><td>Works well</td><td>Works</td></tr>
+    <tr><td>RoPE (vanilla)</td><td>Works</td><td>Degrades</td><td>Fails</td></tr>
+    <tr><td>RoPE + NTK scaling</td><td>Works</td><td>Works</td><td>Works well</td></tr>
+  </tbody>
+</table>
+
+<p><strong>NTK-aware scaling</strong> for RoPE: instead of the default base $\theta = 10000$, multiply by a scaling factor $s$: $\theta' = \theta \cdot s^{d/(d-2)}$. This spreads the frequencies to cover the longer sequence without retraining. More advanced methods like <strong>YaRN</strong> and <strong>LongRoPE</strong> push context to 128K+ tokens.</p>
+
+<\!-- ==================== GOING DEEPER ==================== -->
+<h2 id="going-deeper">2.4 Going Deeper</h2>
+
+<h3>The Length Generalization Problem</h3>
+<p>Even with scaling, there are fundamental challenges. Attention patterns learned at shorter lengths may not transfer — a model trained on 4K tokens hasn't learned to attend to information 100K tokens away. This is why many long-context models use continued pretraining on longer sequences.</p>
+
+<h3>Position Encoding in Vision</h3>
+<p>For Vision Transformers (<a href="modern-variants.html#vit" class="cross-link modern">ViT →</a>), position is 2D (row, col of the patch). Most ViT models use learned 1D positions (treating the 2D grid as a flattened sequence), but 2D-aware encodings can improve performance.</p>
+
+<div class="video-embed">
+  <iframe src="https://www.youtube.com/embed/GQPOtyITy54" allowfullscreen loading="lazy"></iframe>
+  <div class="video-caption">Umar Jamil — Rotary Positional Embeddings (RoPE) explained with code walkthrough</div>
+</div>
+
+<h3>Further Reading</h3>
+<ul>
+  <li><a href="https://arxiv.org/abs/2104.09864">RoFormer: Enhanced Transformer with Rotary Position Embedding</a> — Su et al., 2021</li>
+  <li><a href="https://blog.eleuther.ai/rotary-embeddings/">Rotary Embeddings: A Relative Revolution</a> — EleutherAI blog</li>
+  <li><a href="https://arxiv.org/abs/2108.12409">Train Short, Test Long: Attention with Linear Biases</a> — ALiBi paper</li>
+</ul>
+
+<h3>Related Pages</h3>
+<p>
+  <a href="self-attention.html" class="cross-link attention">Self-Attention →</a> Attention is permutation-invariant — PE breaks the symmetry<br><br>
+  <a href="encoder-decoder.html" class="cross-link architecture">Encoder-Decoder →</a> PE added at the input, before the first layer<br><br>
+  <a href="modern-variants.html" class="cross-link modern">Modern Variants →</a> RoPE + NTK scaling for long context models
+</p>
+
+<div class="page-footer">
+  <div class="page-nav">
+    <a href="self-attention.html">← Self-Attention</a>
+    <a href="normalization.html">Normalization →</a>
+  </div>
+</div>
+
+</main>
+</div>
+
+<script>
+// Theme toggle
+const toggle = document.querySelector('.theme-toggle');
+toggle.addEventListener('click', () => {
+  const current = document.documentElement.getAttribute('data-theme');
+  document.documentElement.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+  toggle.textContent = current === 'dark' ? '🌙' : '☀️';
+});
+
+// Interactive Frequency Band Visualization
+(function() {
+  const canvas = document.getElementById('freqCanvas');
+  if (\!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const slider = document.getElementById('posSlider');
+  const label = document.getElementById('posLabel');
+  
+  function resize() {
+    canvas.width = canvas.offsetWidth * 2;
+    canvas.height = 300;
+  }
+  resize();
+  window.addEventListener('resize', () => { resize(); draw(); });
+  
+  function draw() {
+    const pos = parseInt(slider.value);
+    label.textContent = pos;
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    
+    const d_model = 64;
+    const barWidth = (w - 40) / d_model;
+    
+    for (let i = 0; i < d_model; i++) {
+      const dimIdx = Math.floor(i / 2);
+      const freq = 1.0 / Math.pow(10000, (2 * dimIdx) / d_model);
+      const val = (i % 2 === 0) ? Math.sin(pos * freq) : Math.cos(pos * freq);
+      
+      // Color: map value [-1, 1] to color
+      const r = val > 0 ? Math.round(74 + val * 67) : Math.round(74);
+      const g = val > 0 ? Math.round(144 + val * 73) : Math.round(144 - Math.abs(val) * 100);
+      const b = val > 0 ? Math.round(217) : Math.round(217 - Math.abs(val) * 150);
+      
+      const barHeight = Math.abs(val) * (h/2 - 20);
+      const y = val >= 0 ? h/2 - barHeight : h/2;
+      
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      ctx.fillRect(20 + i * barWidth, y, barWidth - 1, barHeight);
+    }
+    
+    // Center line
+    ctx.strokeStyle = '#999';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(20, h/2);
+    ctx.lineTo(w - 20, h/2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  
+  slider.addEventListener('input', draw);
+  draw();
+})();
+</script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/prism.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js"></script>
+</body>
+</html>

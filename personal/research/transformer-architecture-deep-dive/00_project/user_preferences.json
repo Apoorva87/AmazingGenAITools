@@ -1,0 +1,36 @@
+{
+  "prior_knowledge": {
+    "level": "intermediate",
+    "familiar_with": [
+      "basic neural networks",
+      "backpropagation",
+      "RNNs and LSTMs (conceptual)",
+      "PyTorch basics",
+      "linear algebra fundamentals"
+    ],
+    "gaps": [
+      "mathematical derivation of attention scaling",
+      "RoPE implementation details",
+      "Pre-LN vs Post-LN gradient flow analysis",
+      "mixture-of-experts routing",
+      "FlashAttention IO-aware algorithm"
+    ]
+  },
+  "preferences": {
+    "depth": "graduate_note",
+    "labs": true,
+    "hypothesis_testing": false,
+    "format": "interconnected_html_pages",
+    "style": "Lilian Weng / Jay Alammar hybrid",
+    "code_language": "Python (PyTorch)",
+    "visuals": "rich diagrams, animations where possible",
+    "video_resources": true,
+    "preferred_video_creators": [
+      "Umar Jamil",
+      "3Blue1Brown",
+      "Andrej Karpathy",
+      "StatQuest"
+    ]
+  },
+  "created_at": "2026-03-23T00:00:00Z"
+}
